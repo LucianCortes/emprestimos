@@ -1403,11 +1403,30 @@ function showSugg(){
   if(q.length<1){box.style.display='none';return;}
   var m=clients.filter(function(c){return c.name.toLowerCase().includes(q);});
   if(!m.length){box.style.display='none';return;}
-  box.innerHTML=m.slice(0,5).map(function(c){return'<div class="sugg-item" onmousedown="fillClient('+clients.indexOf(c)+')"><div style="font-weight:600">'+esc(c.name)+'</div>'+(c.phone||c.address?'<div style="font-size:10px;color:#64748b">'+(c.phone||'')+((c.phone&&c.address)?' · ':'')+(c.address||'')+'</div>':'')+'</div>';}).join('');
+  box.innerHTML=m.slice(0,6).map(function(c){
+    var idx=clients.indexOf(c);
+    var sub=(c.phone||c.address)?'<div style="font-size:10px;color:#64748b">'+(c.phone||'')+((c.phone&&c.address)?' · ':'')+(c.address||'')+'</div>':'';
+    return '<div class="sugg-item" style="display:flex;align-items:center;gap:8px">'
+      +'<div style="flex:1;min-width:0;cursor:pointer" onmousedown="fillClient('+idx+')"><div style="font-weight:600">'+esc(c.name)+'</div>'+sub+'</div>'
+      +'<div title="Remover cliente salvo" onmousedown="event.preventDefault();event.stopPropagation();removeClient('+idx+')" style="flex:none;width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#fef2f2;color:#dc2626;font-size:16px;line-height:1;cursor:pointer">&times;</div>'
+      +'</div>';
+  }).join('');
   box.style.display='block';
 }
 function hideSugg(){var b=document.getElementById('sugg-box');if(b)b.style.display='none';}
 function fillClient(idx){var c=clients[idx];if(!c)return;formData.name=c.name;formData.phone=c.phone||'';formData.address=c.address||'';renderForm();}
+// Remove um cliente salvo da lista de sugestões (e da nuvem).
+function removeClient(idx){
+  var c=clients[idx];if(!c)return;
+  if(!confirm('Remover "'+c.name+'" da lista de clientes salvos?'))return;
+  var k=clientKey(c.name);
+  var temEmp=loans.some(function(l){return clientKey(l.name)===k;});
+  clients.splice(idx,1);
+  save();
+  if(temEmp)showToast('"'+c.name+'" tem empréstimo ativo, por isso continua na lista.','warn');
+  else showToast('Cliente "'+c.name+'" removido');
+  showSugg();
+}
 function addLoan(){
   var amt=parseFloat(formData.amount);
   if(!formData.name.trim()||!amt||amt<=0){showToast('Preencha nome e valor','error');return;}
