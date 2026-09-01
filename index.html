@@ -297,8 +297,13 @@ try{
 // ============================================================
 // PERSISTENCE
 // ============================================================
-function save(){
+// save(touched): "touched" e o(s) id(s) mexido(s) agora. Se nao vier nada,
+// marca tudo como pendente (conservador: em caso de duvida, o aparelho manda).
+function save(touched){
+  _ledgerInvalidate();                 // qualquer gravacao invalida o razao em cache
   loans.forEach(upsertClient);
+  markDirty('emprestimos',_idList(touched,loans));
+  markDirty('clientes',clients.map(function(c){return c.id;}));
   _saveLocal();
   cloudQueue();
 }
@@ -328,7 +333,9 @@ function migrateLoans(arr){
     }
   });
 }
-function saveInad(){
+function saveInad(touched){
+  _ledgerInvalidate();                 // idem para inadimplentes
+  markDirty('inadimplentes',_idList(touched,inadimplentes));
   _saveInadLocal();
   cloudQueue();
 }
@@ -341,6 +348,84 @@ function upsertClient(l){
   var ex=clients.find(function(c){return clientKey(c.name)===k;});
   if(!ex)clients.push({id:l.id,name:l.name,phone:l.phone||'',address:l.address||''});
   else{if(l.phone)ex.phone=l.phone;if(l.address)ex.address=l.address;}
+}
+
+// ============================================================
+// PENDENCIAS OFFLINE — o que ainda nao foi confirmado na nuvem
+// ============================================================
+// Duas listas guardadas no aparelho:
+//  - emp_dirty_v1      : ids alterados aqui e ainda nao aceitos pela nuvem ("sujos").
+//  - emp_tombstones_v1 : ids que o usuario apagou de fato (unica coisa que autoriza
+//                        apagar na nuvem). Tombstone velho (>90 dias) e descartado.
+var DIRTY_KEY='emp_dirty_v1', TOMB_KEY='emp_tombstones_v1', TOMB_MAX_DAYS=90;
+var SYNC_TABLES=['emprestimos','clientes','inadimplentes'];
+function _lsGet(k,def){try{var v=JSON.parse(localStorage.getItem(k)||'null');return (v==null)?def:v;}catch(e){return def;}}
+function _lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+// Normaliza o argumento "touched": undefined => todos os ids do array
+function _idList(touched,arr){
+  if(touched==null)return (arr||[]).map(function(o){return o.id;});
+  return (Array.isArray(touched)?touched:[touched]);
+}
+// ---- sujos ----
+function _dirtyAll(){
+  var o=_lsGet(DIRTY_KEY,{});
+  if(!o||typeof o!=='object')o={};
+  SYNC_TABLES.forEach(function(t){if(!Array.isArray(o[t]))o[t]=[];});
+  return o;
+}
+function markDirty(table,ids){
+  if(!table||!ids||!ids.length)return;
+  var o=_dirtyAll(),ch=false;
+  ids.forEach(function(id){if(id&&o[table].indexOf(id)<0){o[table].push(id);ch=true;}});
+  if(ch)_lsSet(DIRTY_KEY,o);
+  // se o registro voltou a existir, ele nao pode continuar na lista de apagados
+  dropTombstones(table,ids);
+}
+function clearDirty(table,ids){
+  if(!table||!ids||!ids.length)return;
+  var o=_dirtyAll(),before=o[table].length;
+  o[table]=o[table].filter(function(id){return ids.indexOf(id)<0;});
+  if(o[table].length!==before)_lsSet(DIRTY_KEY,o);
+}
+function dirtyIds(table){return _dirtyAll()[table]||[];}
+function isDirty(table,id){return dirtyIds(table).indexOf(id)>=0;}
+// ---- apagados (tombstones) ----
+function tombstones(){
+  var arr=_lsGet(TOMB_KEY,[]);
+  if(!Array.isArray(arr))arr=[];
+  var limite=Date.now()-TOMB_MAX_DAYS*86400000,keep=[];
+  arr.forEach(function(t){
+    if(!t||!t.table||!t.id)return;
+    var at=Date.parse(t.at||'');
+    if(isNaN(at))at=Date.now();
+    if(at>=limite)keep.push({table:t.table,id:t.id,at:t.at||new Date(at).toISOString()});
+  });
+  if(keep.length!==arr.length)_lsSet(TOMB_KEY,keep);
+  return keep;
+}
+function addTombstone(table,id){
+  if(!table||!id)return;
+  var arr=tombstones();
+  if(!arr.some(function(t){return t.table===table&&t.id===id;})){
+    arr.push({table:table,id:id,at:new Date().toISOString()});
+    _lsSet(TOMB_KEY,arr);
+  }
+  clearDirty(table,[id]); // apagado nao precisa mais ser enviado
+}
+function dropTombstones(table,ids){
+  var arr=tombstones();
+  var keep=arr.filter(function(t){return !(t.table===table&&ids.indexOf(t.id)>=0);});
+  if(keep.length!==arr.length)_lsSet(TOMB_KEY,keep);
+}
+function tombIds(table){
+  return tombstones().filter(function(t){return t.table===table;}).map(function(t){return t.id;});
+}
+function isTomb(table,id){return tombIds(table).indexOf(id)>=0;}
+// Quantos lancamentos ainda nao chegaram na nuvem (aparece no aviso de sincronizacao)
+function pendingCount(){
+  var o=_dirtyAll(),n=0;
+  SYNC_TABLES.forEach(function(t){n+=o[t].length;});
+  return n+tombstones().length;
 }
 
 // ============================================================
@@ -383,7 +468,8 @@ function cloudQueue(){
   if(_pushTimer)clearTimeout(_pushTimer);
   _pushTimer=setTimeout(function(){cloudPush();},1200);
 }
-// Envia o estado atual para a nuvem: grava/atualiza tudo e apaga o que foi removido
+// Envia o estado atual para a nuvem: grava/atualiza tudo e apaga SOMENTE o que
+// o usuario apagou de fato (lista de tombstones). Nunca apaga "o que nao esta na lista".
 function cloudPush(){
   if(!cloudOn||!cloudUser)return Promise.resolve();
   setSync('Salvando na nuvem…');
@@ -396,17 +482,47 @@ function cloudPush(){
     .catch(function(e){if(console)console.error('cloudPush',e);setSync('Sem conexão — salvo só no aparelho',true);});
 }
 function _pushTable(table, rows, ids){
+  // fotografia dos pendentes ANTES do envio: o que o usuario mexer durante o
+  // envio continua marcado como pendente e sobe no proximo push.
+  var pend = dirtyIds(table);
   var p = rows.length ? sb.from(table).upsert(rows,{onConflict:'id'}) : Promise.resolve({error:null});
   return Promise.resolve(p).then(function(res){
     if(res&&res.error)throw res.error;
-    var del = ids.length
-      ? sb.from(table).delete().eq('user_id',cloudUser).not('id','in','('+ids.map(function(x){return '"'+x+'"';}).join(',')+')')
-      : sb.from(table).delete().eq('user_id',cloudUser);
-    return Promise.resolve(del).then(function(r2){if(r2&&r2.error)throw r2.error;});
+    // so limpa a marca de pendente do que realmente foi enviado e aceito
+    clearDirty(table, pend.filter(function(id){return ids.indexOf(id)>=0;}));
+    // apaga na nuvem apenas os ids que o usuario apagou aqui (e que nao voltaram a existir)
+    var del = tombIds(table).filter(function(id){return ids.indexOf(id)<0;});
+    if(!del.length)return;
+    return Promise.resolve(sb.from(table).delete().eq('user_id',cloudUser).in('id',del))
+      .then(function(r2){
+        if(r2&&r2.error)throw r2.error;
+        dropTombstones(table,del); // exclusao aplicada na nuvem: pode esquecer
+      });
   });
 }
-// Baixa os dados da nuvem. Protege os dados locais: se a nuvem estiver vazia
-// e o aparelho tiver dados, envia os do aparelho (primeira vez) em vez de apagar.
+// Junta nuvem + aparelho SEM perder o que foi feito offline.
+// so na nuvem -> entra | so no aparelho -> fica (e sobe) | nos dois -> sujo vence local, senao vence a nuvem
+function _mergeTable(table,cloudArr,localArr){
+  var out=[],seen={},localById={};
+  (localArr||[]).forEach(function(o){if(o&&o.id)localById[o.id]=o;});
+  (cloudArr||[]).forEach(function(c){
+    if(!c||!c.id||seen[c.id])return;
+    if(isTomb(table,c.id))return;           // apagado aqui: nao ressuscita
+    seen[c.id]=1;
+    var l=localById[c.id];
+    out.push((l&&isDirty(table,c.id))?l:c); // sujo => o aparelho manda
+  });
+  (localArr||[]).forEach(function(l){
+    if(!l||!l.id||seen[l.id])return;
+    if(isTomb(table,l.id))return;
+    seen[l.id]=1;
+    markDirty(table,[l.id]);                // so existe aqui: precisa subir
+    out.push(l);
+  });
+  return out;
+}
+// Baixa os dados da nuvem e FUNDE com o aparelho (nunca substitui).
+// Se a nuvem estiver vazia e o aparelho tiver dados, envia os do aparelho (primeira vez).
 function cloudPull(){
   if(!cloudOn||!cloudUser)return Promise.resolve();
   setSync('Baixando da nuvem…');
@@ -423,11 +539,16 @@ function cloudPull(){
       // Primeira vez: semeia a nuvem com o que já existe no aparelho
       return cloudPush().then(function(){migrateDocsToCloud();setSync('Dados enviados para a nuvem ✓',true);});
     }
-    loans=cl.map(rowToLoan); clients=cc.map(rowToClient); inadimplentes=ci.map(rowToInad);
+    loans=_mergeTable('emprestimos',cl.map(rowToLoan),loans);
+    clients=_mergeTable('clientes',cc.map(rowToClient),clients);
+    inadimplentes=_mergeTable('inadimplentes',ci.map(rowToInad),inadimplentes);
     migrateLoans(loans);
+    _ledgerInvalidate();               // veio coisa nova da nuvem: refaz o razao
     _saveLocal(); _saveInadLocal();
     renderAll(); updateInadBadge();
     migrateDocsToCloud();
+    // sobrou algo feito offline (ou alguma exclusao)? sobe agora.
+    if(pendingCount()>0)return cloudPush();
     setSync('Sincronizado ✓',true);
   }).catch(function(e){
     if(console)console.error('cloudPull',e);
@@ -436,7 +557,13 @@ function cloudPull(){
 }
 function setSync(msg,fade){
   var el=document.getElementById('sync-status'); if(!el)return;
-  el.textContent=msg; el.style.opacity='1';
+  var p=pendingCount();
+  var txt=msg;
+  if(p>0){ // enquanto houver pendencia o aviso fica na tela
+    txt=msg+' · '+p+' lançamento'+(p>1?'s':'')+' aguardando internet';
+    fade=false;
+  }
+  el.textContent=txt; el.style.opacity='1';
   if(fade)setTimeout(function(){if(el)el.style.opacity='0';},2500);
 }
 
@@ -478,8 +605,16 @@ function doLogout(){
   if(sb)sb.auth.signOut().then(function(){location.reload();});
   else location.reload();
 }
-// Mostra o app (usado após login ou em modo offline)
+// Mostra o app (usado após login ou em modo offline).
+// Se houver PIN cadastrado, a tela do teclado sobe ANTES: o #app so vira
+// display:block depois do PIN correto (o CSS ja o deixa escondido, entao nao
+// existe aquele "piscar" do app antes da trava).
 function enterApp(){
+  if(hasPin()&&!appUnlocked){showPinScreen('check','');return;}
+  _showApp();
+}
+// Exibe de fato o app (chamado por enterApp e pelo PIN correto)
+function _showApp(){
   appUnlocked=true;
   var el=document.getElementById('app');if(el)el.style.display='block';
   renderHome();updateInadBadge();afterUnlock();
@@ -651,7 +786,8 @@ function accrueParcelas(){
         p.currentAmount=parseFloat((before+juros).toFixed(2));
         p.dueDate=addDays(p.dueDate,30);
         l.history=l.history||[];
-        l.history.push({date:today(),type:'renovacao',value:before,note:'Parcela '+p.n+': juros '+l.interest+'%: +'+fmt(juros)+'. Novo saldo da parcela: '+fmt(p.currentAmount)});
+        // rate: congela a taxa usada AGORA, para o passado nao mudar se a taxa mudar
+        l.history.push({date:today(),type:'renovacao',value:before,rate:l.interest,note:'Parcela '+p.n+': juros '+l.interest+'%: +'+fmt(juros)+'. Novo saldo da parcela: '+fmt(p.currentAmount)});
         changed=true;guard++;
       }
     });
@@ -667,7 +803,7 @@ function payParcela(loanId,pid){
   l.history=l.history||[];
   l.history.push({date:today(),type:'pagamento_final',value:p.currentAmount,note:'Parcela '+p.n+'/'+l.parcelas.length+' paga'});
   syncParceledLoan(l);
-  save();renderAll();
+  save(loanId);renderAll();
   showToast('✅ Parcela '+p.n+' paga ('+fmt(p.currentAmount)+')');
 }
 function renderParcelasList(loan){
@@ -723,27 +859,260 @@ function doAddValue(id){
   l.originalAmount=parseFloat(((l.originalAmount||0)+amt).toFixed(2));
   l.currentAmount=parseFloat(((l.currentAmount||0)+add).toFixed(2));
   l.history=l.history||[];
-  l.history.push({date:date,type:'emprestimo',value:amt,note:'Valor adicional +'+fmt(amt)+' (juros '+l.interest+'%)'});
-  save();renderAll();closeModal();
+  l.history.push({date:date,type:'emprestimo',value:amt,rate:l.interest,note:'Valor adicional +'+fmt(amt)+' (juros '+l.interest+'%)'});
+  save(id);renderAll();closeModal();
   showToast('✅ +'+fmt(amt)+' adicionado para '+l.name);
 }
 function setParcelas(v,btn){formData.parcelas=v;var p=btn.parentNode;if(p)p.querySelectorAll('.seg-btn').forEach(function(b){b.classList.remove('active');});btn.classList.add('active');updatePreview();}
 
 function getPaidPeriod(loan){return(loan.payments||[]).reduce(function(s,p){return s+(p.value||0);},0);}
-// Total recebido do cliente ao longo de toda a vida do emprestimo (historico + periodo atual)
-function loanReceived(loan){
-  var h=(loan.history||[]).filter(function(e){return e.type&&e.type.indexOf('pagamento')>=0;}).reduce(function(s,e){return s+(e.value||0);},0);
-  var p=(loan.payments||[]).reduce(function(s,e){return s+(e.value||0);},0);
-  return h+p;
-}
+// Total recebido do cliente ao longo de toda a vida do emprestimo (historico +
+// periodo atual), ja descontados os estornos. Sai do ledger.
+function loanReceived(loan){return ledger(loan).recebidoTotal;}
 // Capital realmente emprestado (nao muda em renovacoes)
 function loanPrincipal(loan){
+  if(!loan)return 0;
   if(loan.principal!=null)return loan.principal;
-  var f=(loan.history||[]).find?(loan.history||[]).find(function(h){return h.type==='emprestimo';}):null;
-  return f?f.value:(loan.originalAmount||0);
+  // sem o campo (ex: inadimplente vindo da nuvem): soma tudo que de fato saiu do caixa
+  var soma=(loan.history||[]).reduce(function(s,h){
+    return (h&&(h.type==='emprestimo'||h.type==='empréstimo'))?s+(h.value||0):s;
+  },0);
+  return soma>0?parseFloat(soma.toFixed(2)):(loan.originalAmount||0);
 }
-// ===== JUROS — modelo "juros recebido na hora" (Opção B) =====
-// Juros cobrado ao longo do tempo: a cada empréstimo/adição/renovação incide juro sobre o valor.
+// Quantas vezes este emprestimo ja foi renovado (juros ja incorporados ao saldo)
+function loanRenovacoes(loan){
+  return (loan&&loan.history||[]).filter(function(h){return h.type==='renovacao';}).length;
+}
+// Emprestimos + inadimplentes: quem atrasou nao some do relatorio
+function allRecords(){return loans.concat(inadimplentes||[]);}
+// ============================================================
+// RAZÃO (ledger) — a ÚNICA fonte de verdade financeira do app
+// ============================================================
+// POR QUE ISTO EXISTE. Antes o juro recebido saía de min(recebido, cobrado),
+// comparando dois acumulados. Isso errava por três motivos:
+//   1) ORDEM NO MESMO DIA. Ao renovar, o app grava o pagamento e a renovação
+//      com a MESMA data. O filtro por data não distinguia os dois, então o juro
+//      do mês seguinte entrava na conta ANTES do pagamento que veio primeiro —
+//      e o pagamento era classificado como juro quando na verdade abateu capital.
+//   2) TAXA DE HOJE SOBRE TODO O PASSADO. Mudar o juro de um cliente reescrevia
+//      o lucro de meses já fechados.
+//   3) FATIA MENSAL ERRADA. A diferença de dois min() não é o juro que de fato
+//      entrou dentro da janela.
+// Agora percorremos os eventos um a um, na ordem real dos fatos, e cada
+// pagamento é dividido NA HORA entre juro pendente e abatimento de capital.
+//
+// LIMITE CONHECIDO (importante): lançamentos ANTIGOS não têm o campo `rate`.
+// Para eles o ledger usa a taxa atual (loan.interest) — não há como recuperar a
+// taxa que valia na época, essa informação nunca foi gravada. A partir de agora
+// toda entrada nova de emprestimo/renovacao grava `rate`, então daqui pra frente
+// o passado para de se mexer quando a taxa do cliente muda.
+
+// Arredondamento para centavos. Equivale a parseFloat(x.toFixed(2)) — a
+// convenção que o app usa em todo lugar — mas ~6x mais rápido, o que importa
+// porque isto roda dezenas de milhares de vezes ao desenhar o painel. O sinal
+// separado mantém o "meio pra longe do zero" que o toFixed faz (Math.round
+// sozinho arredondaria -0,125 para -0,12 em vez de -0,13).
+function _r2(n){n=Number(n)||0;return (n<0?-Math.round(-n*100):Math.round(n*100))/100;}
+// Ordem dos fatos DENTRO do mesmo dia: o cliente paga, o desconto é aplicado,
+// e só então o saldo rola cobrando o juro do mês seguinte.
+function _ledgerOrdem(t){
+  t=t||'';
+  if(t==='estorno')return 0;
+  if(t.indexOf('pagamento')>=0)return 1;
+  if(t==='desconto')return 2;
+  if(t==='ajuste')return 3;
+  if(t==='emprestimo'||t==='empréstimo')return 4;
+  if(t==='renovacao')return 5;
+  return 6;                                  // tipo desconhecido vai por último
+}
+// Taxa do evento: a gravada no lançamento; sem ela, a taxa atual do empréstimo.
+function _ledgerRate(loan,ev){
+  var r=(ev&&ev.rate!=null&&ev.rate!=='')?ev.rate:(loan?loan.interest:0);
+  return (parseFloat(r)||0)/100;
+}
+// Cache: ledger() roda dentro de laços (calcStats, relatório, lista de clientes).
+// A assinatura pega qualquer mexida que altere o cálculo; _ledgerGen é o martelo
+// que save()/saveInad() batem para invalidar tudo de uma vez.
+var _ledgerCache={},_ledgerGen=0;
+function _ledgerInvalidate(){_ledgerGen++;_ledgerCache={};}
+function _ledgerSig(loan){
+  return [loan.interest,(loan.history||[]).length,(loan.payments||[]).length,
+    loan.currentAmount,loan.paid?1:0,(loan.parcelas||[]).length,_ledgerGen].join('#');
+}
+function _ledgerVazio(){
+  return {linhas:[],capitalEmprestado:0,recebidoTotal:0,jurosRecebido:0,capitalAbatido:0,
+    jurosPendente:0,descontoTotal:0,saldo:0,emRisco:0};
+}
+function ledger(loan){
+  if(!loan)return _ledgerVazio();
+  var sig=_ledgerSig(loan);
+  var hit=loan.id?_ledgerCache[loan.id]:null;
+  if(hit&&hit.ref===loan&&hit.sig===sig)return hit.res;
+  var res=_ledgerCalc(loan);
+  if(loan.id)_ledgerCache[loan.id]={ref:loan,sig:sig,res:res};
+  return res;
+}
+function _ledgerCalc(loan){
+  // 1) juntar as fontes: o histórico + os pagamentos do período corrente
+  //    (que ainda não foram fechados dentro de history).
+  var eventos=[];
+  (loan.history||[]).forEach(function(h){
+    if(!h)return;
+    eventos.push({date:h.date||'',type:h.type||'',value:parseFloat(h.value)||0,
+      note:h.note||h.description||'',rate:h.rate,atual:false,
+      pagamentoOriginal:h.pagamentoOriginal});
+    // ESTORNO — leia com atenção, aqui mora uma armadilha.
+    // estornoPagamento() APAGA o pagamento de loan.payments e grava só o rastro.
+    // Ou seja: quando o ledger chega no 'estorno', o pagamento que ele deveria
+    // desfazer nem existe mais na base. Desfazer assim mesmo contaria a volta
+    // duas vezes (juro recebido negativo, saldo maior que o getBalance).
+    // Solução: a partir de agora o estorno guarda uma cópia do pagamento
+    // (h.pagamentoOriginal) dentro do próprio JSONB. Quando ela existe, o ledger
+    // recria o pagamento na data original E aplica o estorno — os dois aparecem
+    // no extrato, nada some, e a conta fecha em zero.
+    // Quando ela NÃO existe (estornos antigos, já gravados antes desta versão),
+    // o estorno é só rastro: não mexe em dinheiro nenhum, porque o pagamento já
+    // foi removido da base e a baixa já está refletida no saldo.
+    if(h.type==='estorno'&&h.pagamentoOriginal){
+      var po=h.pagamentoOriginal;
+      var pd=po.date||h.date||'';
+      eventos.push({date:pd,type:'pagamento_parcial',
+        value:parseFloat(po.value)||0,note:po.note||'',rate:null,atual:false,estornado:true,
+        // Quando o pagamento e o estorno caem no MESMO dia (o caso normal: o
+        // dono percebe o erro na hora), o pagamento tem que vir antes do seu
+        // próprio estorno — senão o extrato mostra um saldo que nunca existiu.
+        _ordem:(pd===h.date)?-1:null});
+    }
+  });
+  (loan.payments||[]).forEach(function(p){
+    if(!p)return;
+    eventos.push({date:p.date||'',type:'pagamento_parcial',value:parseFloat(p.value)||0,
+      note:p.note||'',rate:null,atual:true});
+  });
+  // 2) ordenar por data e, no mesmo dia, pela ordem real dos fatos (estável).
+  //    A chave de ordem sai uma vez por evento — dentro do comparador ela seria
+  //    recalculada umas 5x por evento a cada painel.
+  eventos.forEach(function(e,i){e._i=i;e._o=(e._ordem==null)?_ledgerOrdem(e.type):e._ordem;});
+  eventos.sort(function(a,b){
+    if(a.date!==b.date)return (a.date<b.date)?-1:1;
+    if(a._o!==b._o)return a._o-b._o;
+    return a._i-b._i;                        // desempate estável
+  });
+  // 3) percorrer
+  // R e um atalho local para _r2: o arredondamento roda ~7x por evento e a
+  // busca do nome global custa caro num laco desse tamanho.
+  var R=_r2;
+  var jurosPendente=0,capitalEmprestado=0,jurosRecebido=0,capitalAbatido=0,
+      recebidoTotal=0,descontoTotal=0,saldo=0,periodo=1;
+  var linhas=eventos.map(function(e){
+    var r=_ledgerRate(loan,e),t=e.type||'',V=R(e.value);
+    var linha={data:e.date,tipo:t,rotulo:'',valor:V,sinal:'',parteJuros:0,parteCapital:0,
+      juroCobrado:0,saldoDepois:0,nota:e.note,atual:!!e.atual,periodo:periodo,
+      estornado:!!e.estornado};
+    if(t==='emprestimo'||t==='empréstimo'){
+      var jn=R(V*r);
+      capitalEmprestado=R(capitalEmprestado+V);
+      jurosPendente=R(jurosPendente+jn);
+      saldo=R(saldo+V+jn);
+      linha.rotulo='Emprestei';linha.sinal='-';linha.juroCobrado=jn;
+    }else if(t==='renovacao'){
+      // Rolagem do saldo: cobra o juro do mês seguinte. NÃO é dinheiro que sai
+      // nem que entra — por isso não leva sinal e não mexe em capital.
+      var jr=R(V*r);
+      jurosPendente=R(jurosPendente+jr);
+      saldo=R(saldo+jr);
+      linha.rotulo='Rolou para o mês seguinte';linha.sinal='';linha.juroCobrado=jr;
+      periodo++;                             // a renovação fecha um ciclo
+    }else if(t.indexOf('pagamento')>=0){
+      // O dinheiro paga primeiro o juro pendente; o que passa disso abate capital.
+      var j=R(Math.min(V,jurosPendente));
+      jurosPendente=R(jurosPendente-j);
+      jurosRecebido=R(jurosRecebido+j);
+      capitalAbatido=R(capitalAbatido+(V-j));
+      recebidoTotal=R(recebidoTotal+V);
+      saldo=R(saldo-V);
+      linha.rotulo=(t==='pagamento_final'||t==='pagamento_total')?'Recebi (quitação)':'Recebi';
+      linha.sinal='+';linha.parteJuros=j;linha.parteCapital=R(V-j);
+    }else if(t==='desconto'){
+      // Concessão: abate primeiro o juro pendente, o resto reduz o saldo.
+      // NUNCA entra em jurosRecebido nem em recebidoTotal — não é dinheiro que entrou.
+      var jd=R(Math.min(V,jurosPendente));
+      jurosPendente=R(jurosPendente-jd);
+      descontoTotal=R(descontoTotal+V);
+      saldo=R(saldo-V);
+      linha.rotulo='Desconto';linha.sinal='-';linha.juroCobrado=-jd;
+    }else if(t==='estorno'){
+      linha.rotulo='Estorno';linha.sinal='-';
+      if(e.pagamentoOriginal){
+        // Desfaz um pagamento: devolve na ordem INVERSA da alocação — primeiro o
+        // capital abatido, depois o juro recebido (que volta a ficar pendente).
+        var c=R(Math.min(V,capitalAbatido));
+        capitalAbatido=R(capitalAbatido-c);
+        var je=R(V-c);
+        jurosRecebido=R(jurosRecebido-je);
+        jurosPendente=R(jurosPendente+je);
+        recebidoTotal=R(recebidoTotal-V);
+        saldo=R(saldo+V);
+        linha.parteJuros=je;linha.parteCapital=c;
+      }else{
+        // Estorno antigo, sem a cópia do pagamento: o pagamento já foi apagado
+        // da base, então o dinheiro já saiu das contas. Aqui é só rastro.
+        linha.somenteRastro=true;
+      }
+    }else if(t==='ajuste'){
+      // Correção de um lançamento errado (saveEdit). Coerente com o que o app já
+      // faz: mexe no capital e no saldo, mas NÃO gera juro pendente novo —
+      // não é dinheiro novo emprestado, é conserto de digitação.
+      capitalEmprestado=R(capitalEmprestado+V);
+      saldo=R(saldo+R(V*(1+r)));
+      linha.rotulo='Ajuste';linha.sinal='';
+    }else{
+      // Tipo desconhecido: não mexe em nada, mas aparece no extrato para não
+      // sumir da vista do dono.
+      linha.rotulo='Outro lançamento';linha.tipo='outro';linha.sinal='';
+    }
+    linha.saldoDepois=saldo;
+    return linha;
+  });
+  // 4) O saldo do ledger tem que bater com getBalance(). Para o emprestimo
+  //    PARCELADO o saldo mora nas parcelas (cada uma rola sozinha), então o
+  //    extrato continua valendo mas o saldo vem de getBalance() — é ele quem
+  //    manda. Para o não parcelado, o clamp em zero espelha o getBalance().
+  var parcelado=!!(loan.parcelas&&loan.parcelas.length);
+  var saldoFinal=parcelado?getBalance(loan):R(Math.max(0,saldo));
+  return {
+    linhas:linhas,
+    capitalEmprestado:capitalEmprestado,
+    recebidoTotal:recebidoTotal,
+    jurosRecebido:jurosRecebido,
+    capitalAbatido:capitalAbatido,
+    jurosPendente:jurosPendente,
+    descontoTotal:descontoTotal,
+    saldo:saldoFinal,
+    emRisco:R(Math.max(0,capitalEmprestado-recebidoTotal))
+  };
+}
+// ===== Funções derivadas — todas saem do ledger =====
+// Juros recebido dentro de um período [start, end) — datas no formato YYYY-MM-DD.
+// Soma a parte de juro dos pagamentos da janela e DESCONTA os estornos da janela
+// (senão um pagamento estornado no mesmo mês continuaria inflando o lucro do mês).
+function jurosRecPeriodo(loan,start,end){
+  return _r2(ledger(loan).linhas.reduce(function(s,l){
+    var d=l.data;
+    if(!d)return s;
+    if(start&&d<start)return s;              // janela [start, end): fim exclusivo
+    if(end&&!(d<end))return s;
+    if(l.tipo&&l.tipo.indexOf('pagamento')>=0)return s+l.parteJuros;
+    if(l.tipo==='estorno')return s-l.parteJuros;
+    return s;
+  },0));
+}
+// Juros recebido na vida toda (Relatório, cartão do cliente).
+function loanJuros(loan){return ledger(loan).jurosRecebido;}
+// ===== LEGADO — mantidos só para auditoria e para a bateria de testes =====
+// NÃO use estes dois em cálculo financeiro novo: eles são justamente o modelo
+// errado que o ledger substituiu (aplicam a taxa de hoje sobre todo o passado
+// e não sabem a ordem dos fatos dentro do mesmo dia).
 function _chargedBefore(loan,before){
   var rate=(loan.interest||0)/100;
   return (loan.history||[]).reduce(function(s,h){
@@ -757,19 +1126,205 @@ function _receivedBefore(loan,before){
   var p=(loan.payments||[]).filter(function(e){var d=e.date||today();return !before||d<before;}).reduce(function(s,e){return s+(e.value||0);},0);
   return h+p;
 }
-// Do que o cliente pagou até certa data, a parte que é juro (o resto abate o capital).
-function _jurosRecBefore(loan,before){return Math.min(_receivedBefore(loan,before),_chargedBefore(loan,before));}
-// Juros recebido dentro de um período [start, end) — datas no formato YYYY-MM-DD
-function jurosRecPeriodo(loan,start,end){return Math.max(0,_jurosRecBefore(loan,end)-_jurosRecBefore(loan,start));}
-// Juros recebido na vida toda (usado no Relatório). Capital só é "devolvido" quando o cliente abate de fato.
-function loanJuros(loan){return _jurosRecBefore(loan,null);}
 // Capital de fato emprestado num período: soma empréstimos e adições (dinheiro que saiu). NÃO conta renovação.
 function capitalNoPeriodo(start,end){
-  return loans.reduce(function(s,l){
+  return allRecords().reduce(function(s,l){
     return s+(l.history||[]).reduce(function(a,h){
       return (h.type==='emprestimo'&&(!start||h.date>=start)&&(!end||h.date<end))?a+(h.value||0):a;
     },0);
   },0);
+}
+// ===== DESCONTO NEGOCIADO =====
+// Regra do proprietario: o juro continua sendo o do mes cheio. O desconto e uma
+// concessao registrada — ele ABATE o saldo devedor e NADA MAIS:
+//  - NAO entra em _receivedBefore()  (nao e dinheiro recebido, nao vira "juros ganho")
+//  - NAO entra em _chargedBefore()   (nao muda o juro cobrado)
+//  - NAO entra em capitalNoPeriodo() (nao e dinheiro que saiu do caixa)
+// Isso ja vale automaticamente porque essas tres funcoes filtram por tipo
+// ('pagamento*', 'emprestimo', 'renovacao') e 'desconto' nao casa com nenhum.
+function loanDescontos(loan){return ledger(loan).descontoTotal;}
+// ============================================================
+// MEMÓRIA DA TAXA E PERFIL DO CLIENTE — deduzidos, nunca digitados
+// ============================================================
+// POR QUE DEDUZIR EM VEZ DE GUARDAR. Não há como criar coluna nova no banco,
+// mas mesmo se houvesse: um campo "taxa do cliente" preenchido à mão desatualiza
+// no dia em que o dono empresta com outra taxa e esquece de editar o cadastro.
+// O histórico, esse, nunca mente — ele É o que aconteceu. Então tudo aqui sai de
+// allRecords() e do ledger, e se corrige sozinho no próximo empréstimo.
+
+// Data do evento mais recente do histórico — só para desempatar dois empréstimos
+// que começaram no MESMO dia (acontece quando o dono lança dois de uma vez).
+function _ultimoEventoData(l){
+  var d='';
+  ((l&&l.history)||[]).forEach(function(h){if(h&&h.date&&h.date>d)d=h.date;});
+  return d;
+}
+// Dia em que o dinheiro de fato saiu. CUIDADO: loan.startDate NÃO serve para
+// isso — doRenew() o reescreve para hoje a cada renovação, então num empréstimo
+// renovado ele é a data da última rolagem, não a do empréstimo. O lançamento
+// 'emprestimo' no histórico, esse, nunca se move. Só cai no startDate em
+// registro antigo que não tem esse lançamento.
+function _dataDoEmprestimo(l){
+  var d='';
+  ((l&&l.history)||[]).forEach(function(h){
+    if(!h||!h.date)return;
+    if(h.type!=='emprestimo'&&h.type!=='empréstimo')return;
+    if(!d||h.date<d)d=h.date;                 // o primeiro desembolso
+  });
+  return d||((l&&l.startDate)||'');
+}
+// Qual taxa este cliente costuma pagar? Vale a do empréstimo MAIS RECENTE —
+// é a última decisão que o dono tomou sobre ele. `varias` avisa que o histórico
+// não é unânime, para o app não fingir uma certeza que não tem.
+// Devolve {taxa, quando, varias, taxas[]} ou null se o cliente é novo.
+function clientRate(nome){
+  var k=clientKey(nome);
+  if(!k)return null;
+  var melhor=null,vistas={};
+  allRecords().forEach(function(l){
+    if(!l||clientKey(l.name)!==k)return;
+    var t=parseFloat(l.interest);
+    if(isNaN(t))return;                       // registro sem taxa não opina
+    vistas[t]=1;
+    // A ESCOLHA é pelo startDate (o registro mexido mais recentemente); a DATA
+    // MOSTRADA é a do desembolso, que não se move quando o empréstimo rola.
+    var ord=l.startDate||'',ult=_ultimoEventoData(l);
+    if(!melhor||ord>melhor.ord||(ord===melhor.ord&&ult>melhor.ult))
+      melhor={taxa:t,ord:ord,ult:ult,quando:_dataDoEmprestimo(l)};
+  });
+  if(!melhor)return null;
+  var taxas=Object.keys(vistas).map(Number).sort(function(a,b){return a-b;});
+  return {taxa:melhor.taxa,quando:melhor.quando,varias:taxas.length>1,taxas:taxas};
+}
+// Formata uma taxa sem casas decimais inúteis: 25 -> "25%", 27.5 -> "27,5%".
+function _fmtTaxa(t){
+  t=parseFloat(t)||0;
+  return (Math.round(t*10)/10).toString().replace('.',',')+'%';
+}
+// Primeiro nome, para a faixa do formulário não virar um parágrafo.
+function _primeiroNome(n){return String(n||'').trim().split(/\s+/)[0]||'';}
+// PERFIL: o dono tem dois tipos de cliente na cabeça — o que rola o juro para
+// sempre e o que vai abatendo. Isto lê o comportamento em vez de perguntar.
+// Corte de 5%: abaixo disso o capital praticamente não andou.
+// Só classifica quem já renovou; sem renovação não há comportamento, seria chute.
+function clientPerfil(key){
+  var k=clientKey(key);
+  var cap=0,abat=0,renov=0,naRua=0,jurosMes=0;
+  allRecords().forEach(function(l){
+    if(!l||clientKey(l.name)!==k)return;
+    var g=ledger(l);
+    cap=_r2(cap+g.capitalEmprestado);
+    abat=_r2(abat+g.capitalAbatido);
+    renov+=loanRenovacoes(l);
+    if(l.paid)return;                         // quitado não rende mais nem está na rua
+    naRua=_r2(naRua+Math.max(0,g.capitalEmprestado-g.capitalAbatido));
+    jurosMes=_r2(jurosMes+_juroDoPeriodoAtual(g));
+  });
+  var pct=cap>0?(abat/cap):0;
+  var r={capital:cap,abatido:abat,renovacoes:renov,naRua:naRua,jurosMes:jurosMes,
+    tipo:'novo',rotulo:'',frase:''};
+  if(renov>=2&&pct<0.05){
+    r.tipo='so_juro';r.rotulo='Paga só o juro';
+    r.frase='Renovou '+renov+' vez'+(renov>1?'es':'')+' sem abater a dívida. Rende '
+      +fmt(jurosMes)+' por mês, mas os '+fmt(naRua)+' seguem na rua.';
+  }else if(pct>=0.05&&renov>=1){
+    r.tipo='amortiza';r.rotulo='Vai abatendo';
+    r.frase='Já abateu '+fmt(abat)+' da dívida. O juro do mês vai caindo junto.';
+  }
+  return r;
+}
+// Juro cobrado no ciclo aberto: o juroCobrado do último 'emprestimo'/'renovacao'
+// do razão. Vem do ledger e NÃO cai a zero quando o cliente já pagou o juro do
+// mês (jurosPendente cairia, e a frase diria "rende R$ 0,00 por mês" — mentira).
+function _juroDoPeriodoAtual(g){
+  var linhas=(g&&g.linhas)||[];
+  for(var i=linhas.length-1;i>=0;i--){
+    var t=linhas[i].tipo;
+    if(t==='renovacao'||t==='emprestimo'||t==='empréstimo')return _r2(linhas[i].juroCobrado);
+  }
+  return 0;
+}
+// ============================================================
+// PRÉVIA DA DIVISÃO DO PAGAMENTO — o que é juro, o que abate
+// ============================================================
+// Antes de gravar, mostra ao dono exatamente a mesma conta que o razão vai fazer
+// depois: o dinheiro cobre primeiro o juro pendente, o que sobra abate o capital
+// (a regra está em _ledgerCalc, no ramo 'pagamento'). Por isso a prévia sai DO
+// ledger — se ela divergir do que fica gravado, é bug, não arredondamento.
+// Devolve {juro, capital, faltaJuro, saldoDepois, texto}; texto vazio se não há
+// o que prever (valor <= 0, ou empréstimo parcelado, onde o saldo mora nas
+// parcelas e esta divisão não descreve o que acontece).
+function previaPagamento(loan,valor){
+  var vazio={juro:0,capital:0,faltaJuro:0,saldoDepois:0,texto:''};
+  var v=_r2(valor);
+  if(!loan||v<=0)return vazio;
+  if(loan.parcelas&&loan.parcelas.length)return vazio;
+  var g=ledger(loan);
+  var jp=_r2(g.jurosPendente);
+  var juro=_r2(Math.min(v,jp));
+  var capital=_r2(v-juro);
+  var falta=_r2(Math.max(0,jp-v));
+  // A DIVISÃO (juro x abatimento) sai do razão — é ela que vai ficar gravada.
+  // Já o "novo saldo" sai de getBalance(), que é o número que o dono vê no
+  // cartão um segundo depois de confirmar. Em dados coerentes os dois são o
+  // mesmo (ledger.saldo é definido como getBalance); em base antiga torta, o
+  // certo é a prévia bater com a tela, não com a teoria.
+  var saldoDepois=_r2(Math.max(0,getBalance(loan)-v));
+  var texto;
+  if(jp<=0)texto=fmt(v)+' abate a dívida inteiro · novo saldo '+fmt(saldoDepois);
+  else if(v<jp)texto=fmt(v)+' vai todo para o juro · ainda faltam '+fmt(falta)+' de juro';
+  else if(capital<=0)texto=fmt(v)+' cobre exatamente o juro · novo saldo '+fmt(saldoDepois);
+  else texto=fmt(juro)+' cobre o juro · '+fmt(capital)+' abate a dívida · novo saldo '+fmt(saldoDepois);
+  return {juro:juro,capital:capital,faltaJuro:falta,saldoDepois:saldoDepois,texto:texto};
+}
+// ============================================================
+// CAPITAL RECUPERADO — "quanto do meu bolso ainda está exposto aqui"
+// ============================================================
+// O dono pensa em caixa, não em saldo devedor. Este bloco responde a pergunta
+// dele com três fatos já acontecidos (nada de projeção): quanto saiu do bolso,
+// quanto já voltou e quanto ainda falta voltar para ele não ter mais nada a
+// perder. A barra é recebido/emprestado travada em 100% — quem já devolveu mais
+// do que saiu não "enche demais"; o excedente é juro e aparece no juro ganho.
+function _capitalBox(cap,rec,risco){
+  cap=_r2(cap);rec=_r2(rec);risco=_r2(risco);
+  var pct=cap>0?Math.min(100,Math.round((rec/cap)*100)):(rec>0?100:0);
+  var cel=function(rot,val,cor){
+    return '<div style="min-width:0"><div style="font-size:8px;text-transform:uppercase;letter-spacing:.4px;color:#94a3b8;margin-bottom:2px">'+rot+'</div>'
+      +'<div style="font-size:13px;font-weight:700;color:'+cor+'">'+fmt(val)+'</div></div>';
+  };
+  var corpo='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">'
+    +cel('Tirei do bolso',cap,'#1e293b')
+    +cel('Já voltou',rec,'#16a34a')
+    +cel('Ainda em risco',risco,risco>0?'#dc2626':'#16a34a')
+    +'</div>';
+  if(cap>0&&risco<=0){
+    corpo+='<div style="background:#f0fdf4;border:0.5px solid #86efac;border-radius:8px;padding:7px 9px;font-size:11px;font-weight:700;color:#15803d">✓ Capital recuperado — daqui pra frente é só ganho</div>';
+  }else if(cap>0){
+    corpo+='<div style="height:7px;background:#e2e8f0;border-radius:20px;overflow:hidden">'
+      +'<div style="height:100%;width:'+pct+'%;background:#16a34a;border-radius:20px"></div></div>'
+      +'<div style="font-size:10px;color:#64748b;margin-top:5px">Faltam '+fmt(risco)+' para você não ter mais nada a perder com este cliente.</div>';
+  }
+  return '<div style="background:#f8fafc;border:0.5px solid #e2e8f0;border-radius:10px;padding:10px 11px">'+corpo+'</div>';
+}
+function descontosPeriodo(loan,from,to){
+  return (loan&&loan.history||[]).reduce(function(s,h){
+    return (h.type==='desconto'&&inRange(h.date,from,to))?s+(h.value||0):s;
+  },0);
+}
+// Aplica o desconto no registro (nao salva nem redesenha — quem chama decide).
+// Se o desconto zerar o saldo, o emprestimo e encerrado por acordo.
+function _regDesconto(loan,valor,motivo){
+  valor=parseFloat((parseFloat(valor)||0).toFixed(2));
+  if(!loan||valor<=0)return 0;
+  loan.currentAmount=parseFloat(Math.max(0,(loan.currentAmount||0)-valor).toFixed(2));
+  loan.history=loan.history||[];
+  loan.history.push({type:'desconto',date:today(),value:valor,note:(motivo||'').trim()||'Desconto negociado'});
+  if(getBalance(loan)<=0.009){
+    _histPagamentosPeriodo(loan);      // preserva o que ja tinha sido pago no periodo
+    loan.currentAmount=0;loan.paid=true;
+    loan.history.push({type:'ajuste',date:today(),value:0,note:'Saldo zerado pelo desconto — dívida encerrada por acordo.'});
+  }
+  return valor;
 }
 // Datas / intervalos para o relatorio
 function dStr(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
@@ -777,7 +1332,7 @@ function inRange(ds,from,to){if(!ds)return false;if(from&&ds<from)return false;i
 function loanActiveInRange(l,from,to){if(!from&&!to)return true;if(inRange(l.startDate,from,to))return true;if((l.history||[]).some(function(h){return inRange(h.date,from,to);}))return true;return(l.payments||[]).some(function(p){return inRange(p.date,from,to);});}
 function clientEvents(ls,from,to){var ev=[];ls.forEach(function(l){(l.history||[]).forEach(function(h){var t=h.type||'';var kind=(t.indexOf('emprest')>=0)?'borrow':(t.indexOf('pagamento')>=0||t==='pay')?'pay':(t.indexOf('renov')>=0||t==='renew')?'renew':'other';if((!from&&!to)||inRange(h.date,from,to))ev.push({date:h.date,kind:kind,value:h.value||0});});(l.payments||[]).forEach(function(p){if((!from&&!to)||inRange(p.date,from,to))ev.push({date:p.date,kind:'pay',value:p.value||0});});});ev.sort(function(a,b){return new Date(b.date+'T00:00:00')-new Date(a.date+'T00:00:00');});return ev;}
 // Juros composto automatico dos inadimplentes: a cada mes vencido, rola +30 dias e acumula juros sobre o saldo
-function accrueInadimplentes(){var changed=false;(inadimplentes||[]).forEach(function(i){if(i.interest==null||!i.dueDate)return;var guard=0;while(daysUntil(i.dueDate)<0&&guard<600){var before=parseFloat(i.currentAmount)||0;var juros=parseFloat((before*(i.interest/100)).toFixed(2));i.currentAmount=parseFloat((before+juros).toFixed(2));i.dueDate=addDays(i.dueDate,30);i.history=i.history||[];i.history.push({date:today(),type:'renovacao',value:before,note:'Juros de inadimplencia '+i.interest+'%: +'+fmt(juros)+'. Novo saldo: '+fmt(i.currentAmount)});i.lastAccrual=today();changed=true;guard++;}});if(changed)saveInad();return changed;}
+function accrueInadimplentes(){var changed=false;(inadimplentes||[]).forEach(function(i){if(i.interest==null||!i.dueDate)return;var guard=0;while(daysUntil(i.dueDate)<0&&guard<600){var before=parseFloat(i.currentAmount)||0;var juros=parseFloat((before*(i.interest/100)).toFixed(2));i.currentAmount=parseFloat((before+juros).toFixed(2));i.dueDate=addDays(i.dueDate,30);i.history=i.history||[];i.history.push({date:today(),type:'renovacao',value:before,rate:i.interest,note:'Juros de inadimplencia '+i.interest+'%: +'+fmt(juros)+'. Novo saldo: '+fmt(i.currentAmount)});i.lastAccrual=today();changed=true;guard++;}});if(changed)saveInad();return changed;}
 // Link WhatsApp sem duplicar o DDI 55
 function waLink(phone){
   var p=(phone||'').replace(/\D/g,'');
@@ -847,6 +1402,7 @@ function deleteLoan(id){
   var l=loans.find(function(x){return x.id===id;});
   if(l){if(!isDataUrl(l.docRG))docDel(l.docRG);if(!isDataUrl(l.docResidencia))docDel(l.docResidencia);}
   loans=loans.filter(function(l){return l.id!==id;});
+  addTombstone('emprestimos',id); // unica coisa que autoriza apagar na nuvem
   delete expandedCards[id];
   deleteConfirm=null;
   save();renderAll();
@@ -865,7 +1421,7 @@ function doInlinePay(id,bal){
   loan.payments=[];
   payingLoan=null;
   delete expandedCards[id];
-  save();renderAll();
+  save(id);renderAll();
   showToast('✅ '+fmt(bal)+' — quitado!');
 }
 function doInlinePayPartial(id){
@@ -879,7 +1435,7 @@ function doInlinePayPartial(id){
   loan.payments=loan.payments||[];
   loan.payments.push({id:'p'+Date.now(),date:today(),value:val,note:'Pagamento parcial'});
   payingLoan=null;
-  save();renderAll();
+  save(id);renderAll();
   showToast('✅ '+fmt(val)+' registrado · restam '+fmt(getBalance(loan)));
 }
 
@@ -933,25 +1489,60 @@ function checkBackupReminder(){
   var stale=!last||(Date.now()-parseInt(last,10))>7*86400000;
   if(stale)setTimeout(function(){showToast('💾 Faça um backup dos seus dados (aba Segurança → Backup)','warn');},1600);
 }
+// Bloqueio temporario apos varios erros seguidos (trava de forca bruta caseira)
+var PIN_MAX_FAILS=5, PIN_LOCK_MS=30000;
+var pinFails=0, pinLockUntil=0, _pinLockTimer=null;
+function pinLockedSecs(){var s=Math.ceil((pinLockUntil-Date.now())/1000);return s>0?s:0;}
+function _pinTick(){
+  var el=document.getElementById('pin-err');
+  var s=pinLockedSecs();
+  if(s>0){if(el)el.textContent='🔒 Bloqueado — tente de novo em '+s+'s';return;}
+  if(_pinLockTimer&&typeof clearInterval!=='undefined'){clearInterval(_pinLockTimer);}
+  _pinLockTimer=null;
+  if(el)el.textContent='Pode tentar de novo';
+}
+function _pinStartLockTimer(){
+  if(typeof setInterval==='undefined')return;          // ambiente sem timers (testes)
+  if(_pinLockTimer)clearInterval(_pinLockTimer);
+  _pinTick();
+  _pinLockTimer=setInterval(_pinTick,1000);
+}
 function showPinScreen(mode,err){
   var existing=document.getElementById('pin-overlay');
   if(existing)existing.remove();
   pinMode=mode;pinBuffer='';
-  var titles={check:'Digite seu PIN',set:'Crie um PIN de 4 dígitos',confirm:'Confirme o novo PIN'};
+  var titles={check:'Digite seu PIN',set:'Crie um PIN de 4 dígitos',confirm:'Confirme o novo PIN',remove:'Digite o PIN atual'};
+  var subs={
+    check:'Controle de Empréstimos',
+    set:'Trava simples ao abrir o app — não é criptografia',
+    confirm:'Digite os mesmos 4 dígitos de novo',
+    remove:'Confirme quem você é para remover a trava'
+  };
   var html='<div class="pin-overlay" id="pin-overlay">'
     +'<div class="pin-logo">🔐</div>'
     +'<div class="pin-title">'+titles[mode]+'</div>'
-    +'<div class="pin-sub">'+(mode==='check'?'Controle de Empréstimos':'Será solicitado ao abrir o app')+'</div>'
+    +'<div class="pin-sub">'+(subs[mode]||'')+'</div>'
     +'<div class="pin-dots">'+[0,1,2,3].map(function(i){return'<div class="pin-dot" id="pd-'+i+'"></div>';}).join('')+'</div>'
     +'<div class="pin-error" id="pin-err">'+esc(err)+'</div>'
     +'<div class="pin-pad">'+[1,2,3,4,5,6,7,8,9,'','0','⌫'].map(function(n){
       return n===''?'<div></div>':'<button class="pin-key'+(n==='⌫'?' del':'')+'" onclick="pinPress(\''+n+'\')">'+n+'</button>';
     }).join('')+'</div>'
-    +(mode==='check'?'<div class="pin-forgot" onclick="pinForgot()">Esqueci meu PIN</div>':'')
+    +(mode==='set'?'<div style="font-size:9px;color:#475569;text-align:center;margin-top:14px;max-width:250px;line-height:1.5">O PIN só atrapalha quem pega o celular na mão. Não embaralha nada: quem tiver acesso técnico ao aparelho lê os dados assim mesmo. A proteção de verdade é a senha da sua conta e o bloqueio de tela do celular.</div>':'')
+    +(mode==='check'
+      ?'<div class="pin-forgot" onclick="pinForgot()">Esqueci meu PIN</div>'
+      :'<div class="pin-forgot" onclick="pinCancelSet()">Cancelar</div>')
     +'</div>';
   document.body.insertAdjacentHTML('afterbegin',html);
+  if(pinLockedSecs()>0)_pinStartLockTimer();
+}
+// Sai da tela de PIN sem mexer em nada (so vale para criar/alterar/remover)
+function pinCancelSet(){
+  if(pinMode==='check')return;                          // no boot nao ha para onde voltar
+  var el=document.getElementById('pin-overlay');if(el)el.remove();
+  pinBuffer='';pinNewTemp='';
 }
 function pinPress(v){
+  if(pinLockedSecs()>0)return;                          // teclado travado
   if(v==='⌫')pinBuffer=pinBuffer.slice(0,-1);
   else{if(pinBuffer.length>=4)return;pinBuffer+=v;}
   for(var i=0;i<4;i++){var d=document.getElementById('pd-'+i);if(d)d.classList.toggle('filled',i<pinBuffer.length);}
@@ -959,23 +1550,85 @@ function pinPress(v){
 }
 function pinSubmit(){
   if(pinMode==='check'){
+    if(pinLockedSecs()>0){pinBuffer='';return;}
     if(checkPin(pinBuffer)){
+      pinFails=0;pinLockUntil=0;
       var el=document.getElementById('pin-overlay');if(el)el.remove();
-      appUnlocked=true;
-      document.getElementById('app').style.display='block';
-      renderHome();updateInadBadge();afterUnlock();
-    }else{showPinScreen('check','❌ PIN incorreto');}
+      _showApp();
+    }else{
+      pinFails++;
+      if(pinFails>=PIN_MAX_FAILS){
+        pinFails=0;pinLockUntil=Date.now()+PIN_LOCK_MS;
+        showPinScreen('check','');
+        _pinStartLockTimer();
+      }else{
+        var rest=PIN_MAX_FAILS-pinFails;
+        showPinScreen('check','❌ PIN incorreto — '+rest+' tentativa'+(rest>1?'s':'')+' antes de travar 30s');
+      }
+    }
   }else if(pinMode==='set'){
     pinNewTemp=pinBuffer;showPinScreen('confirm','');
   }else if(pinMode==='confirm'){
     if(pinBuffer===pinNewTemp){
-      var el=document.getElementById('pin-overlay');if(el)el.remove();
+      var el2=document.getElementById('pin-overlay');if(el2)el2.remove();
       setPin(pinBuffer);
+      pinFails=0;pinLockUntil=0;
       showToast('🔐 PIN salvo!');closeModal();
     }else{showPinScreen('set','❌ PINs diferentes');}
+  }else if(pinMode==='remove'){
+    if(checkPin(pinBuffer)){
+      var el3=document.getElementById('pin-overlay');if(el3)el3.remove();
+      localStorage.removeItem(PIN_KEY);
+      pinFails=0;pinLockUntil=0;
+      showToast('🔓 PIN removido');closeModal();
+    }else{showPinScreen('remove','❌ PIN incorreto');}
   }
 }
-function pinForgot(){if(confirm('Redefinir PIN apaga todos os dados. Continuar?')){localStorage.clear();location.reload();}}
+// "Esqueci meu PIN" — antes isso fazia localStorage.clear() e apagava TUDO do
+// aparelho sem aviso. Agora o caminho normal e sair da conta e entrar de novo
+// pelo e-mail e senha (limpa o PIN e nao perde dado nenhum). O apagamento total
+// so aparece como ultimo recurso, com confirmacao dupla.
+function pinForgot(){
+  var ov=document.getElementById('pin-overlay');if(!ov)return;
+  var logged=!!(cloudOn&&cloudUser);
+  var pend=pendingCount();
+  var bs='width:100%;border:none;border-radius:10px;padding:11px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:7px';
+  ov.innerHTML='<div style="width:100%;max-width:300px">'
+    +'<div style="font-size:30px;text-align:center">🔑</div>'
+    +'<div style="font-size:15px;font-weight:700;color:#f1f5f9;text-align:center;margin:6px 0 10px">Esqueci meu PIN</div>'
+    +'<div style="font-size:11px;line-height:1.65;color:#94a3b8;margin-bottom:12px">'
+    +'O PIN é só uma tranca deste aparelho — ele não embaralha nem esconde os dados de quem tem acesso técnico ao celular. '
+    +(logged
+      ?'Como você está logado na nuvem, o jeito certo é <b style="color:#e2e8f0">sair da conta e entrar de novo com seu e-mail e senha</b>. Isso limpa o PIN e <b style="color:#e2e8f0">não perde nenhum dado</b>: tudo volta da nuvem.'
+      :'Este aparelho <b style="color:#e2e8f0">não está logado</b> numa conta agora. Se você tem conta, conecte-se à internet e reabra o app: ao entrar com e-mail e senha o PIN é limpo e os dados voltam da nuvem.')
+    +'</div>'
+    +(pend>0?'<div style="background:#422006;border:0.5px solid #a16207;border-radius:9px;padding:9px 11px;font-size:10px;color:#fde68a;line-height:1.5;margin-bottom:10px">⚠️ Existem <b>'+pend+' lançamento'+(pend>1?'s':'')+'</b> que ainda não subiram para a nuvem. Enquanto eles não subirem, apagar este aparelho perde esse trabalho.</div>':'')
+    +(logged?'<button style="'+bs+';background:#2563eb;color:#fff" onclick="pinLogoutReset()">🚪 Sair da conta e entrar de novo</button>':'')
+    +'<div style="font-size:9px;color:#64748b;margin:10px 0 5px;text-transform:uppercase;letter-spacing:.6px">Último recurso</div>'
+    +'<button style="'+bs+';background:#7f1d1d;color:#fecaca" onclick="pinWipe()">🧨 Apagar tudo deste aparelho</button>'
+    +'<div style="font-size:10px;color:#64748b;line-height:1.5;margin-bottom:12px">Apaga empréstimos, clientes, inadimplentes e o PIN guardados <b>neste celular</b>. O que já subiu para a nuvem continua lá; o que não subiu se perde.</div>'
+    +'<div class="pin-forgot" style="text-align:center" onclick="showPinScreen(\'check\',\'\')">← Voltar para o teclado</div>'
+    +'</div>';
+}
+// Sair da conta limpando o PIN: o dono prova quem e pelo e-mail e senha.
+function pinLogoutReset(){
+  if(!confirm('Sair da conta agora?\n\nVocê vai precisar do seu e-mail e senha para entrar de novo.\nNenhum dado é apagado — o PIN é removido.'))return;
+  localStorage.removeItem(PIN_KEY);
+  if(cloudOn&&sb&&sb.auth)sb.auth.signOut().then(function(){location.reload();}).catch(function(){location.reload();});
+  else location.reload();
+}
+// Apagamento total do aparelho — confirmacao dupla e aviso do que se perde
+function pinWipe(){
+  var pend=pendingCount();
+  var msg='APAGAR TUDO deste aparelho?\n\nSão removidos deste celular: empréstimos, clientes, inadimplentes, o PIN e a sessão da conta.\n\n';
+  msg+=(pend>0)
+    ? '⚠️ ATENÇÃO: '+pend+' lançamento'+(pend>1?'s':'')+' ainda NÃO subiram para a nuvem e serão PERDIDOS para sempre.'
+    : 'Tudo que já subiu para a nuvem continua lá e volta quando você entrar de novo.';
+  if(!confirm(msg))return;
+  var t=prompt('Última confirmação.\n\nDigite APAGAR (em maiúsculas) para apagar este aparelho:');
+  if(t!=='APAGAR'){alert('Nada foi apagado.');return;}
+  localStorage.clear();location.reload();
+}
 function openPinSettings(){
   var logged=cloudOn&&cloudUser;
   var statusEmoji=logged?'☁️':'📴';
@@ -988,9 +1641,16 @@ function openPinSettings(){
     +'<div style="display:flex;flex-direction:column;gap:7px">'
     +(logged?'<button class="btn-primary" onclick="closeModal();cloudPull()">🔄 Sincronizar agora</button>':'')
     +'<button class="btn-secondary" onclick="closeModal();openBackup()">📥 Backup & Restaurar</button>'
+    +(hasPin()
+      ?'<button class="btn-secondary" onclick="closeModal();showPinScreen(\'set\',\'\')">🔐 Alterar PIN</button>'
+        +'<button class="btn-secondary" onclick="closeModal();showPinScreen(\'remove\',\'\')">🔓 Remover PIN</button>'
+      :'<button class="btn-secondary" onclick="closeModal();showPinScreen(\'set\',\'\')">🔐 Criar PIN de acesso</button>')
     +(logged?'<button class="btn-secondary" onclick="doLogout()">🚪 Sair da conta</button>':'')
     +'</div>'
-    +'<div style="background:#eff6ff;border:0.5px solid #bfdbfe;border-radius:8px;padding:8px 10px;font-size:10px;color:#1d4ed8;margin-top:12px">'
+    +'<div style="background:#f8fafc;border:0.5px solid #e2e8f0;border-radius:8px;padding:8px 10px;font-size:10px;color:#475569;margin-top:9px;line-height:1.55">'
+    +'🔐 <b>Sobre o PIN:</b> é uma trava simples contra quem pega o celular na mão — não é criptografia. Os dados continuam legíveis para quem tiver acesso técnico ao aparelho. A proteção de verdade é a senha da sua conta e o bloqueio de tela do celular.'
+    +'</div>'
+    +'<div style="background:#eff6ff;border:0.5px solid #bfdbfe;border-radius:8px;padding:8px 10px;font-size:10px;color:#1d4ed8;margin-top:7px">'
     +(logged?'Seus dados e as fotos sincronizam automaticamente entre seus aparelhos. O backup continua disponível como segurança extra.':'O acesso é protegido por login. Sem conexão, o app usa os dados do aparelho.')
     +'</div>');
 }
@@ -1011,19 +1671,28 @@ function calcStats(){
   var mStart=ty+'-'+_p2(tm+1)+'-01';
   var mEnd=(tm===11?(ty+1)+'-01-01':ty+'-'+_p2(tm+2)+'-01');
   // Juros recebido (Opção B): juro entra como lucro na hora; capital só baixa quando o cliente abate de fato.
-  var juros=loans.reduce(function(s,l){return s+loanJuros(l);},0);
-  var jurosYear=loans.reduce(function(s,l){return s+jurosRecPeriodo(l,yStart,yEnd);},0);
-  var lucroM=loans.reduce(function(s,l){return s+jurosRecPeriodo(l,mStart,mEnd);},0);
+  // inadimplentes entram no juro/lucro: o que ja foi pago antes de atrasar continua contando
+  var todos=allRecords();
+  var juros=todos.reduce(function(s,l){return s+loanJuros(l);},0);
+  var jurosYear=todos.reduce(function(s,l){return s+jurosRecPeriodo(l,yStart,yEnd);},0);
+  var lucroM=todos.reduce(function(s,l){return s+jurosRecPeriodo(l,mStart,mEnd);},0);
   var lucroA=jurosYear;
   // Capital emprestado (dinheiro que de fato saiu) — renovação não conta como capital novo
   var capitalYear=capitalNoPeriodo(yStart,yEnd);
   var capitalMonth=capitalNoPeriodo(mStart,mEnd);
   var activeClientCount=new Set(active.map(function(l){return clientKey(l.name);})).size;
   var overdueCount=active.filter(function(l){return daysUntil(l.dueDate)<0;}).length;
+  // DINHEIRO EM RISCO: quanto do bolso dele ainda nao voltou. So conta o que
+  // ainda esta em aberto — emprestimos ativos + inadimplentes. Emprestimo
+  // quitado nao tem mais risco nenhum, esta fechado.
+  var emAberto=active.concat(inadimplentes||[]);
+  var emRisco=_r2(emAberto.reduce(function(s,l){return s+ledger(l).emRisco;},0));
+  var capitalEmRisco=_r2(emAberto.reduce(function(s,l){return s+ledger(l).capitalEmprestado;},0));
   return{totalOwed:totalOwed,totalLent:totalLent,totalOverdue:totalOverdue,warn3:warn3,
     clientCount:clientCount,activeClientCount:activeClientCount,overdueCount:overdueCount,
     juros:juros,jurosYear:jurosYear,capitalYear:capitalYear,capitalMonth:capitalMonth,
-    lucroM:lucroM,lucroA:lucroA,activeCount:active.length};
+    lucroM:lucroM,lucroA:lucroA,activeCount:active.length,
+    emRisco:emRisco,capitalEmRisco:capitalEmRisco};
 }
 
 // ============================================================
@@ -1047,6 +1716,14 @@ function renderHome(){
     +'<div class="metric-label">capital emprestado esse ano</div>'
     +'<div class="metric-val" style="font-size:15px">'+fmt(s.capitalYear)+'</div>'
     +'<div style="font-size:9px;color:#94a3b8;margin-top:2px">emprestado</div></div>';
+  // Dinheiro em risco — quanto do bolso dele ainda nao voltou (ativos + inadimplentes).
+  // Fica ao lado do capital na rua de proposito: um e o quanto saiu, o outro e o
+  // quanto ainda pode nao voltar. So fatos, sem previsao.
+  var riscoCor=s.emRisco>0?'#dc2626':'#16a34a';
+  html+='<div class="metric-card" onclick="goScreen(\'clients\')">'
+    +'<div class="metric-label">dinheiro em risco</div>'
+    +'<div class="metric-val" style="font-size:15px;color:'+riscoCor+'">'+fmt(s.emRisco)+'</div>'
+    +'<div style="font-size:9px;color:#94a3b8;margin-top:2px">de '+fmt(s.capitalEmRisco)+' que saíram do bolso</div></div>';
   // Juros do ano
   html+='<div class="metric-card" onclick="goScreen(\'report\')">'
     +'<div class="metric-label">total de juros recebido esse ano</div>'
@@ -1154,6 +1831,16 @@ function renderGroup(group){
   var statusBg=hasOver?'#fef2f2':hasWarn?'#fffbeb':allPaid?'#f0fdf4':'#eff6ff';
   var statusTc=hasOver?'#dc2626':hasWarn?'#b45309':allPaid?'#16a34a':'#1d4ed8';
   var badgeHtml=active.length>0?'<div class="badge-count" style="background:'+accentColor+'">'+active.length+'</div>':'';
+  // Capital ainda exposto neste cliente (só os empréstimos ATIVOS). Soma
+  // emprestimo a emprestimo: um já recuperado não tapa o buraco de outro.
+  // Sem empréstimo ativo não há o que avisar — nada aparece.
+  var riscoAtivo=_r2(active.reduce(function(s,l){return s+ledger(l).emRisco;},0));
+  var riscoTag='';
+  if(active.length){
+    riscoTag=riscoAtivo>0
+      ?'<span style="color:#b45309;white-space:nowrap">falta '+fmt(riscoAtivo)+' voltar</span>'
+      :'<span style="color:#16a34a;white-space:nowrap">✓ recuperado</span>';
+  }
   var loansHtml='';
   if(isExp){
     var sN=group.name.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
@@ -1184,6 +1871,24 @@ function renderGroup(group){
         +'<div style="padding:9px 6px;text-align:center;border-left:0.5px solid #e2e8f0;border-right:0.5px solid #e2e8f0"><div style="font-size:8px;text-transform:uppercase;letter-spacing:.4px;color:#94a3b8;margin-bottom:2px">Recebido</div><div style="font-size:12px;font-weight:700;color:#334155">'+fmt(totalRecebido)+'</div></div>'
         +'<div style="padding:9px 6px;text-align:center"><div style="font-size:8px;text-transform:uppercase;letter-spacing:.4px;color:#94a3b8;margin-bottom:2px">Juros</div><div style="font-size:12px;font-weight:700;color:#16a34a">'+fmt(totalJurosCliente)+'</div></div>'
         +'</div>';
+      // Capital recuperado do cliente. Soma o risco emprestimo a emprestimo (e
+      // nao capital total - recebido total): um emprestimo ja recuperado nao
+      // "cobre" o buraco de outro que ainda esta em aberto.
+      var capCli=0,recCli=0,riscoCli=0;
+      group.loans.forEach(function(l){
+        var g=ledger(l);
+        capCli+=g.capitalEmprestado;recCli+=g.recebidoTotal;riscoCli+=g.emRisco;
+      });
+      histContent+='<div style="padding:9px 11px;border-top:0.5px solid #e2e8f0">'+_capitalBox(capCli,recCli,riscoCli)+'</div>';
+      // Perfil deduzido do comportamento. Selo pequeno + uma frase com números
+      // reais — o rótulo sozinho não ensina nada a quem lê.
+      var perfil=clientPerfil(key);
+      if(perfil.rotulo){
+        histContent+='<div style="padding:0 11px 9px">'
+          +'<span style="display:inline-block;font-size:9px;font-weight:700;color:#475569;background:#f1f5f9;border:0.5px solid #e2e8f0;border-radius:20px;padding:2px 8px">'+esc(perfil.rotulo)+'</span>'
+          +'<div style="font-size:10px;line-height:1.4;color:#64748b;margin-top:4px">'+esc(perfil.frase)+'</div>'
+          +'</div>';
+      }
       var ordered=group.loans.slice().sort(function(a,b){if(a.paid!==b.paid)return a.paid?1:-1;return new Date(b.startDate+'T00:00:00')-new Date(a.startDate+'T00:00:00');});
       histContent+=ordered.map(function(l){
         var emp=loanPrincipal(l),pago=loanReceived(l),jur=loanJuros(l);
@@ -1211,6 +1916,7 @@ function renderGroup(group){
     +'<div style="flex:1;min-width:0">'
     +'<div class="client-name">'+esc(group.name)+'</div>'
     +'<div class="client-sub">'+fmt(totalBalance)+(phone?' · '+phone:'')+'</div>'
+    +(riscoTag?'<div class="client-sub" style="margin-top:2px">'+riscoTag+'</div>':'')
     +'</div>'
     +(phone&&!allPaid?'<button style="width:28px;height:28px;background:#064e3b;border:none;border-radius:50%;color:#34d399;font-size:9px;font-weight:700;cursor:pointer;flex-shrink:0" onclick="event.stopPropagation();sendWAGroup(\''+key+'\')">WA</button>':'')
     +'<span class="status-badge" style="background:'+statusBg+';color:'+statusTc+'">'+statusText+'</span>'
@@ -1220,6 +1926,19 @@ function renderGroup(group){
     +'</div>';
 }
 
+// Botao do historico completo (unico lugar onde se ve a foto do documento).
+// Quando ha foto, o botao avisa discretamente com o 🪪.
+function _histBtn(loan){
+  var temDoc=!!(loan.docRG||loan.docResidencia);
+  return'<button class="abtn" title="Histórico completo'+(temDoc?' e fotos do documento':'')+'" onclick="openHistory(\''+loan.id+'\')">📋 Histórico'+(temDoc?' · 🪪':'')+'</button>';
+}
+// Linha do pagamento rápido: quanto do valor digitado vai ser juro. Sai do
+// jurosPendente do razão — o mesmo número que a prévia do modal e a gravação usam.
+function _juroDoMesHtml(loan){
+  var jp=_r2(ledger(loan).jurosPendente);
+  if(jp<=0)return 'Juro deste mês já está pago · o que entrar abate a dívida.';
+  return 'Juro deste mês: '+fmt(jp)+' · o que passar disso abate a dívida.';
+}
 function renderLoanRow(loan,phone){
   var lid=loan.id;
   var parceled=!!(loan.parcelas&&loan.parcelas.length);
@@ -1254,7 +1973,11 @@ function renderLoanRow(loan,phone){
         +'<button class="abtn" style="flex:1 1 0%;text-align:center;min-width:0" onclick="openEdit(\''+lid+'\')">✏️ Editar</button>'
         +'<button class="abtn red" style="flex:1 1 0%;text-align:center;min-width:0" onclick="confirmDelete(\''+lid+'\')">🗑️ Excluir</button>'
         +'</div>'
-        +(phone?'<div class="loan-actions" style="padding-top:0;border-top:0.5px solid #f1f5f9"><button class="abtn green" onclick="sendWA(\''+lid+'\')">📲 WA</button><button class="abtn" onclick="openReceipt(\''+lid+'\')">🧾 Recibo</button></div>':'');
+        +'<div class="loan-actions" style="padding-top:0;border-top:0.5px solid #f1f5f9">'
+        +(phone?'<button class="abtn green" onclick="sendWA(\''+lid+'\')">📲 WA</button>':'')
+        +'<button class="abtn" onclick="openReceipt(\''+lid+'\')">🧾 Recibo</button>'
+        +_histBtn(loan)
+        +'</div>';
     } else if(isPaying){
       actions='<div style="padding:8px 10px;background:#eff6ff;border-top:0.5px solid #bfdbfe">'
         +'<div style="font-size:10px;color:#1d4ed8;font-weight:700;margin-bottom:6px">Como deseja pagar?</div>'
@@ -1263,18 +1986,23 @@ function renderLoanRow(loan,phone){
         +'<input id="partial-'+lid+'" type="number" step="0.01" min="0.01" placeholder="Valor parcial..." style="flex:1;border:0.5px solid #bfdbfe;border-radius:8px;padding:8px 10px;font-size:12px;font-family:inherit;outline:none;background:#fff">'
         +'<button onclick="doInlinePayPartial(\''+lid+'\')" style="background:#2563eb;color:#fff;border:none;border-radius:8px;padding:9px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">Parcial ✓</button>'
         +'</div>'
-        +'<button onclick="cancelPayLoan()" style="width:100%;background:none;border:none;padding:5px;font-size:10px;color:#94a3b8;cursor:pointer;font-family:inherit;margin-top:3px">Cancelar</button>'
+        +'<div style="font-size:10px;line-height:1.35;color:#1e40af;margin-top:5px">'+_juroDoMesHtml(loan)+'</div>'
+        +'<div style="display:flex;align-items:center;justify-content:space-between;margin-top:3px">'
+        +'<button onclick="cancelPayLoan()" style="background:none;border:none;padding:5px;font-size:10px;color:#94a3b8;cursor:pointer;font-family:inherit">Cancelar</button>'
+        +'<button onclick="openPay(\''+lid+'\')" style="background:none;border:none;padding:5px;font-size:10px;color:#2563eb;cursor:pointer;font-family:inherit;text-decoration:underline">mais opções</button>'
+        +'</div>'
         +'</div>'
         +'<div style="padding:5px 9px 5px;display:flex;gap:5px;border-top:0.5px solid #e2e8f0">'
         +'<button class="abtn" style="flex:1 1 0%;text-align:center;min-width:0" onclick="openAddValue(\''+lid+'\')">➕ Valor</button>'
         +'<button class="abtn" style="flex:1 1 0%;text-align:center;min-width:0" onclick="openEdit(\''+lid+'\')">✏️ Editar</button>'
         +'<button class="abtn red" style="flex:1 1 0%;text-align:center;min-width:0" onclick="confirmDelete(\''+lid+'\')">🗑️ Excluir</button>'
         +'</div>'
-        +((phone||canRenew)?'<div class="loan-actions" style="padding-top:0;border-top:0.5px solid #f1f5f9">'
+        +'<div class="loan-actions" style="padding-top:0;border-top:0.5px solid #f1f5f9">'
         +(phone?'<button class="abtn green" onclick="sendWA(\''+lid+'\')">📲 WA</button>':'')
         +(canRenew?'<button class="abtn amber" onclick="openRenew(\''+lid+'\')">🔄 Renovar</button>':'')
         +'<button class="abtn" onclick="openReceipt(\''+lid+'\')">🧾 Recibo</button>'
-        +'</div>':'');
+        +_histBtn(loan)
+        +'</div>';
     } else {
       actions='<div style="padding:6px 9px 5px;display:flex;gap:5px;flex-wrap:wrap">'
         +(!loan.paid?'<button class="abtn blue" style="flex:2 1 0%;padding:9px;text-align:center;font-size:12px;border-radius:8px" onclick="startPayLoan(\''+lid+'\')">💳 Pagar</button>':'')
@@ -1282,11 +2010,12 @@ function renderLoanRow(loan,phone){
         +'<button class="abtn" style="flex:1 1 0%;text-align:center;min-width:0" onclick="openEdit(\''+lid+'\')">✏️ Editar</button>'
         +'<button class="abtn red" style="flex:1 1 0%;text-align:center;min-width:0" onclick="confirmDelete(\''+lid+'\')">🗑️ Excluir</button>'
         +'</div>'
-        +((phone||canRenew)?'<div class="loan-actions" style="padding-top:0;border-top:0.5px solid #f1f5f9">'
+        +'<div class="loan-actions" style="padding-top:0;border-top:0.5px solid #f1f5f9">'
         +(phone?'<button class="abtn green" onclick="sendWA(\''+lid+'\')">📲 WA</button>':'')
         +(canRenew?'<button class="abtn amber" onclick="openRenew(\''+lid+'\')">🔄 Renovar</button>':'')
         +'<button class="abtn" onclick="openReceipt(\''+lid+'\')">🧾 Recibo</button>'
-        +'</div>':'');
+        +_histBtn(loan)
+        +'</div>';
     }
   }
   return'<div class="loan-row" id="card-'+lid+'">'
@@ -1300,7 +2029,65 @@ function renderLoanRow(loan,phone){
 
 function openForm(pre){
   formData=Object.assign({name:'',phone:'',address:'',amount:'',interest:'30',startDate:today(),note:'',docRG:'',docResidencia:'',parcelas:'1'},pre||{});
+  // Cliente conhecido abre com a taxa DELE, não com o padrão 30%. Só quando quem
+  // chamou não impôs uma taxa (o "+ Novo empréstimo para X" não impõe).
+  formData._rateManual=false;
+  if(!(pre&&pre.interest))_adotarTaxaDoCliente();
   renderForm();
+}
+// Puxa a taxa do histórico do cliente para o formulário. Não mexe em nada se o
+// dono já escolheu uma taxa na mão nesta tela (_rateManual) — a decisão dele
+// sempre ganha do palpite do app.
+function _adotarTaxaDoCliente(){
+  if(formData._rateManual)return null;
+  var info=clientRate(formData.name);
+  if(info)formData.interest=String(info.taxa);
+  return info;
+}
+// A faixa acima dos botões de taxa. Cinza quando o app apenas lembra; âmbar
+// quando o dono escolheu uma taxa diferente da que costuma cobrar deste cliente.
+// Nunca bloqueia — só conta o que o histórico diz.
+function _taxaHintHtml(){
+  var info=clientRate(formData.name);
+  if(!info)return '';
+  var escolhida=parseFloat(formData.interest);
+  var difere=!isNaN(escolhida)&&Math.abs(escolhida-info.taxa)>0.001;
+  var lista=info.varias?' (este cliente já teve '+info.taxas.map(_fmtTaxa).join(' e ')+')':'';
+  if(difere){
+    return '<div id="rate-hint" style="background:#fffbeb;border:0.5px solid #fcd34d;border-radius:7px;padding:5px 8px;margin-bottom:5px;font-size:10px;line-height:1.35;color:#b45309">'
+      +'Atenção: você cobrava '+_fmtTaxa(info.taxa)+' deste cliente.'+esc(lista)+'</div>';
+  }
+  return '<div id="rate-hint" style="padding:0 2px 5px;font-size:10px;line-height:1.35;color:#94a3b8">'
+    +'Você cobrou '+_fmtTaxa(info.taxa)+' de '+esc(_primeiroNome(formData.name))
+    +(info.quando?' no empréstimo de '+fmtDate(info.quando):'')
+    +' — toque em outra taxa para mudar.'+esc(lista)+'</div>';
+}
+// Redesenha só a faixa e os botões de taxa. Chamado enquanto o dono DIGITA o
+// nome: um renderForm() inteiro aqui tiraria o foco do campo a cada tecla.
+function _syncTaxaCliente(){
+  _adotarTaxaDoCliente();
+  var hint=document.getElementById('rate-hint');
+  var wrap=document.getElementById('rate-hint-wrap');
+  if(wrap)wrap.innerHTML=_taxaHintHtml();
+  else if(hint)hint.outerHTML=_taxaHintHtml();
+  var seg=document.getElementById('rate-seg');
+  if(seg&&!formData._rateManual){
+    var atual=String(formData.interest);
+    var btns=seg.querySelectorAll('.seg-btn');
+    var achou=false;
+    btns.forEach(function(b){
+      var v=b.getAttribute('data-rate');
+      var on=(v!=null&&v===atual);
+      if(on)achou=true;
+      b.classList[on?'add':'remove']('active');
+    });
+    var outro=document.getElementById('btn-outro-rate');
+    if(outro){
+      outro.textContent=achou?'Outro':atual+'%';
+      outro.classList[achou?'remove':'add']('active');
+    }
+  }
+  updatePreview();
 }
 
 function renderForm(){
@@ -1317,7 +2104,7 @@ function renderForm(){
   var rates=['10','15','20','25','30'];
   var isCustom=!rates.includes(String(formData.interest));
   modal('<div class="modal-header"><span class="modal-title">Novo Empréstimo</span><button class="modal-close" onclick="closeModal()">×</button></div>'
-    +'<div class="field"><label>Nome *</label><div style="position:relative"><input id="f-name" class="inp" type="text" value="'+esc(formData.name)+'" placeholder="Nome do cliente" oninput="formData.name=this.value;showSugg()" onblur="setTimeout(hideSugg,200)" autocomplete="off"><div id="sugg-box"></div></div></div>'
+    +'<div class="field"><label>Nome *</label><div style="position:relative"><input id="f-name" class="inp" type="text" value="'+esc(formData.name)+'" placeholder="Nome do cliente" oninput="formData.name=this.value;showSugg();_syncTaxaCliente()" onblur="setTimeout(hideSugg,200)" autocomplete="off"><div id="sugg-box"></div></div></div>'
     +'<div class="field-row">'
     +'<div class="field"><label>Telefone</label><input class="inp" type="tel" value="'+esc(formData.phone||'')+'" placeholder="(00) 00000-0000" oninput="formData.phone=this.value"></div>'
     +'<div class="field"><label>Endereço</label><input class="inp" type="text" value="'+esc(formData.address||'')+'" placeholder="Rua, número..." oninput="formData.address=this.value"></div>'
@@ -1327,8 +2114,9 @@ function renderForm(){
     +'<div class="field"><label>Data do empréstimo</label><input class="inp" type="date" value="'+formData.startDate+'" onchange="formData.startDate=this.value;updatePreview()"></div>'
     +'</div>'
     +'<div class="field"><label>Juros mensal (%)</label>'
-    +'<div class="seg-control">'
-    +rates.map(function(v){return'<button class="seg-btn'+(String(formData.interest)===v?' active':'')+'" onclick="setRate(\''+v+'\',this)">'+v+'%</button>';}).join('')
+    +'<div id="rate-hint-wrap">'+_taxaHintHtml()+'</div>'
+    +'<div class="seg-control" id="rate-seg">'
+    +rates.map(function(v){return'<button class="seg-btn'+(String(formData.interest)===v?' active':'')+'" data-rate="'+v+'" onclick="setRate(\''+v+'\',this)">'+v+'%</button>';}).join('')
     +'<button class="seg-btn'+(isCustom?' active':'')+'" id="btn-outro-rate" onclick="askCustomRate(this)">'+(isCustom?formData.interest+'%':'Outro')+'</button>'
     +'</div></div>'
     +'<div class="field"><label>Parcelas</label><div class="seg-control">'+['1','2','3','4','6','12'].map(function(v){return'<button class="seg-btn'+(String(formData.parcelas||'1')===v?' active':'')+'" onclick="setParcelas(\''+v+'\',this)">'+v+'x</button>';}).join('')+'</div></div>'
@@ -1342,21 +2130,31 @@ function renderForm(){
 }
 function setRate(v,btn){
   formData.interest=v;
+  formData._rateManual=true;                 // a escolha na mão manda; o app para de sugerir
   btn.parentNode.querySelectorAll('.seg-btn').forEach(function(b){b.classList.remove('active');});
   btn.classList.add('active');
   var outroBtn=document.getElementById('btn-outro-rate');
   if(outroBtn)outroBtn.textContent='Outro';
+  _redesenharTaxaHint();
   updatePreview();
 }
 function askCustomRate(btn){
   var v=prompt('Digite a taxa de juros (%):', formData.interest);
   if(v&&!isNaN(parseFloat(v))){
     formData.interest=v;
+    formData._rateManual=true;
     btn.parentNode.querySelectorAll('.seg-btn').forEach(function(b){b.classList.remove('active');});
     btn.classList.add('active');
     btn.textContent=v+'%';
+    _redesenharTaxaHint();
     updatePreview();
   }
+}
+// Só a faixa (sem mexer nos botões): usada depois que o dono escolhe uma taxa,
+// para o aviso âmbar aparecer ou sumir na hora.
+function _redesenharTaxaHint(){
+  var wrap=document.getElementById('rate-hint-wrap');
+  if(wrap)wrap.innerHTML=_taxaHintHtml();
 }
 function updatePreview(){
   var box=document.getElementById('form-preview');if(!box)return;
@@ -1406,15 +2204,27 @@ function showSugg(){
   box.innerHTML=m.slice(0,6).map(function(c){
     var idx=clients.indexOf(c);
     var sub=(c.phone||c.address)?'<div style="font-size:10px;color:#64748b">'+(c.phone||'')+((c.phone&&c.address)?' · ':'')+(c.address||'')+'</div>':'';
+    // A taxa aparece já na sugestão: ele vê com quanto cobrou antes de escolher.
+    var ri=clientRate(c.name);
+    var taxaTag=ri?'<span style="font-weight:400;color:#64748b"> · '+_fmtTaxa(ri.taxa)+'</span>':'';
     return '<div class="sugg-item" style="display:flex;align-items:center;gap:8px">'
-      +'<div style="flex:1;min-width:0;cursor:pointer" onmousedown="fillClient('+idx+')"><div style="font-weight:600">'+esc(c.name)+'</div>'+sub+'</div>'
+      +'<div style="flex:1;min-width:0;cursor:pointer" onmousedown="fillClient('+idx+')"><div style="font-weight:600">'+esc(c.name)+taxaTag+'</div>'+sub+'</div>'
       +'<div title="Remover cliente salvo" onmousedown="event.preventDefault();event.stopPropagation();removeClient('+idx+')" style="flex:none;width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#fef2f2;color:#dc2626;font-size:16px;line-height:1;cursor:pointer">&times;</div>'
       +'</div>';
   }).join('');
   box.style.display='block';
 }
 function hideSugg(){var b=document.getElementById('sugg-box');if(b)b.style.display='none';}
-function fillClient(idx){var c=clients[idx];if(!c)return;formData.name=c.name;formData.phone=c.phone||'';formData.address=c.address||'';renderForm();}
+// Escolher da lista de sugestões traz também a TAXA do cliente — é o dado que o
+// dono mais esquece. Zera _rateManual porque escolher outro cliente é começar
+// outra decisão: a taxa que ele tinha tocado era para o nome anterior.
+function fillClient(idx){
+  var c=clients[idx];if(!c)return;
+  formData.name=c.name;formData.phone=c.phone||'';formData.address=c.address||'';
+  formData._rateManual=false;
+  _adotarTaxaDoCliente();
+  renderForm();
+}
 // Remove um cliente salvo da lista de sugestões (e da nuvem).
 function removeClient(idx){
   var c=clients[idx];if(!c)return;
@@ -1422,6 +2232,7 @@ function removeClient(idx){
   var k=clientKey(c.name);
   var temEmp=loans.some(function(l){return clientKey(l.name)===k;});
   clients.splice(idx,1);
+  addTombstone('clientes',c.id);
   save();
   if(temEmp)showToast('"'+c.name+'" tem empréstimo ativo, por isso continua na lista.','warn');
   else showToast('Cliente "'+c.name+'" removido');
@@ -1439,7 +2250,9 @@ function addLoan(){
     startDate:start,note:formData.note||'',
     paid:false,payments:[],
     docRG:'',docResidencia:'',
-    history:[{date:start,type:'emprestimo',value:amt,note:'Empréstimo de '+fmt(amt)+' · Juros '+formData.interest+'%'+(nParc>1?' · '+nParc+'x':'')}]
+    // rate: a taxa fica congelada no lancamento — mudar o juro do cliente depois
+    // nao pode reescrever o lucro de meses ja fechados.
+    history:[{date:start,type:'emprestimo',value:amt,rate:parseFloat(formData.interest),note:'Empréstimo de '+fmt(amt)+' · Juros '+formData.interest+'%'+(nParc>1?' · '+nParc+'x':'')}]
   };
   // Fotos vão para o IndexedDB; o loan guarda só a chave
   ['docRG','docResidencia'].forEach(function(f){
@@ -1458,7 +2271,7 @@ function addLoan(){
     loan.currentAmount=parseFloat((amt*(1+rate)).toFixed(2));
     loan.dueDate=addDays(start,30);
   }
-  loans.push(loan);save();renderAll();closeModal();
+  loans.push(loan);save(loan.id);renderAll();closeModal();
   showToast('✅ Empréstimo de '+loan.name+(nParc>1?' ('+nParc+'x)':'')+' adicionado');
 }
 
@@ -1468,43 +2281,120 @@ function addLoan(){
 // ============================================================
 function openPay(id){
   var loan=loans.find(function(l){return l.id===id;});if(!loan)return;
+  var parceled=!!(loan.parcelas&&loan.parcelas.length);
   var balance=getBalance(loan);
   var paidSoFar=getPaidPeriod(loan);
+  var totalDesc=loanDescontos(loan);
   var pct=loan.currentAmount>0?Math.min(100,(paidSoFar/loan.currentAmount*100)):0;
   var paymentsHtml='';
   if((loan.payments||[]).length>0){
     paymentsHtml='<div style="margin-bottom:9px">'
       +'<div style="font-size:9px;font-weight:700;color:#64748b;letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">Pagamentos registrados neste período</div>'
-      +(loan.payments||[]).map(function(p){
-        return'<div class="payment-item"><span style="color:#64748b">'+fmtDate(p.date)+(p.note?' · '+esc(p.note):'')+'</span><span style="color:#16a34a;font-weight:700">+'+fmt(p.value)+'</span></div>';
-      }).join('')+'</div>';
+      +(loan.payments||[]).map(function(p,i){
+        return'<div class="payment-item"><span style="color:#64748b">'+fmtDate(p.date)+(p.note?' · '+esc(p.note):'')+'</span>'
+          +'<span style="display:flex;align-items:center;gap:7px"><span style="color:#16a34a;font-weight:700">+'+fmt(p.value)+'</span>'
+          +'<button title="Estornar este lançamento" onclick="estornoPagamento(\''+id+'\','+i+')" style="background:#fef2f2;border:0.5px solid #fecaca;color:#dc2626;border-radius:6px;padding:3px 7px;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit">↩️</button></span></div>';
+      }).join('')
+      +'<div style="font-size:9px;color:#94a3b8;margin-top:3px">O ↩️ estorna um lançamento feito por engano: o saldo volta a subir e fica registrado no histórico.</div>'
+      +'</div>';
+  }
+  // Movimentacoes ja fechadas (periodos anteriores) — so leitura
+  var passados=(loan.history||[]).filter(function(h){
+    return h.type&&(h.type.indexOf('pagamento')>=0||h.type==='desconto'||h.type==='estorno');
+  });
+  var passadosHtml='';
+  if(passados.length){
+    passadosHtml='<div style="margin-bottom:9px">'
+      +'<div style="font-size:9px;font-weight:700;color:#64748b;letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">Histórico (períodos já fechados)</div>'
+      +passados.slice(-8).map(function(h){
+        var m=_histLabel(h.type);
+        return'<div class="payment-item"><span style="color:#64748b">'+fmtDate(h.date)+' · '+m.label+'</span><span style="color:'+m.valCor+';font-weight:700">'+m.sinal+fmt(h.value)+'</span></div>';
+      }).join('')
+      +(passados.length>8?'<div style="font-size:9px;color:#94a3b8;margin-top:3px">Mostrando os 8 mais recentes — veja tudo em 📋 Histórico.</div>':'')
+      +'</div>';
   }
   modal('<div class="modal-header"><span class="modal-title">💳 Registrar Pagamento</span><button class="modal-close" onclick="closeModal()">×</button></div>'
     +'<div class="payment-tracker">'
     +'<div style="font-size:12px;font-weight:700;color:#0f172a;margin-bottom:7px">'+esc(loan.name)+'</div>'
     +'<div class="tracker-row"><span class="tracker-label">Total cobrado</span><span class="tracker-val">'+fmt(loan.currentAmount)+'</span></div>'
     +(paidSoFar>0?'<div class="tracker-row"><span class="tracker-label">Já pago</span><span class="tracker-val" style="color:#16a34a">'+fmt(paidSoFar)+'</span></div>':'')
+    +(totalDesc>0?'<div class="tracker-row"><span class="tracker-label">Descontos concedidos</span><span class="tracker-val" style="color:#0d9488">-'+fmt(totalDesc)+'</span></div>':'')
     +'<div class="tracker-bar"><div class="tracker-fill" style="width:'+pct+'%"></div></div>'
     +'<div class="tracker-row"><span class="tracker-label" style="font-weight:600">Saldo devedor</span><span class="tracker-val" style="color:#ef4444;font-size:14px">'+fmt(balance)+'</span></div>'
     +'</div>'
     +paymentsHtml
+    +passadosHtml
     +'<button style="width:100%;background:#f0fdf4;border:0.5px solid #bbf7d0;border-radius:10px;padding:12px 13px;cursor:pointer;font-family:inherit;margin-bottom:9px;display:flex;justify-content:space-between;align-items:center" onclick="doPayment(\''+id+'\','+balance+',\'\')">'
     +'<div><div style="font-size:12px;font-weight:700;color:#16a34a">✅ Quitar saldo completo</div><div style="font-size:10px;color:#22c55e;margin-top:1px">Marca como quitado</div></div>'
     +'<span style="font-size:15px;font-weight:800;color:#16a34a">'+fmt(balance)+'</span></button>'
-    +'<div style="border:0.5px solid #e2e8f0;border-radius:10px;padding:12px;background:#f8fafc">'
+    +'<div style="border:0.5px solid #e2e8f0;border-radius:10px;padding:12px;background:#f8fafc;margin-bottom:9px">'
     +'<div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:7px">💵 Valor parcial recebido</div>'
-    +'<input id="pay-input" type="number" inputmode="decimal" placeholder="0,00" style="width:100%;background:#fff;border:0.5px solid #d1d5db;border-radius:8px;padding:9px 11px;font-size:14px;font-family:inherit;outline:none;margin-bottom:6px" oninput="updatePayBtn(this.value)">'
+    +'<input id="pay-input" type="number" inputmode="decimal" placeholder="0,00" style="width:100%;background:#fff;border:0.5px solid #d1d5db;border-radius:8px;padding:9px 11px;font-size:14px;font-family:inherit;outline:none;margin-bottom:6px" oninput="updatePayBtn(this.value,\''+id+'\')">'
+    +'<div id="pay-split" style="font-size:10px;line-height:1.35;color:#475569;margin:-2px 0 6px"></div>'
     +'<input id="pay-note" type="text" placeholder="Observação (opcional)" style="width:100%;background:#fff;border:0.5px solid #d1d5db;border-radius:8px;padding:7px 11px;font-size:11px;font-family:inherit;outline:none;margin-bottom:7px">'
     +'<div style="display:flex;gap:7px">'
     +'<button class="btn-secondary" onclick="closeModal()">Cancelar</button>'
     +'<button id="btn-conf-pay" class="btn-primary" disabled style="opacity:.4" onclick="doPartialModal(\''+id+'\')">Registrar</button>'
-    +'</div></div>');
+    +'</div></div>'
+    +(parceled
+      ?'<div style="background:#f8fafc;border:0.5px solid #e2e8f0;border-radius:10px;padding:10px 12px;font-size:10px;color:#64748b">Empréstimo parcelado: o desconto não se aplica aqui — ajuste na lista de parcelas.</div>'
+      :'<div style="border:0.5px solid #99f6e4;border-radius:10px;padding:12px;background:#f0fdfa">'
+        +'<div style="font-size:11px;font-weight:700;color:#0f766e;margin-bottom:3px">🏷️ Desconto negociado (opcional)</div>'
+        +'<div style="font-size:10px;color:#0d9488;margin-bottom:7px">Abate o saldo devedor. <b>Não</b> conta como dinheiro recebido e <b>não</b> entra no lucro — fica registrado como concessão.</div>'
+        +'<div style="display:flex;gap:6px;margin-bottom:7px">'
+        +'<input id="pay-desc" type="number" inputmode="decimal" placeholder="Desconto (R$)" style="flex:1;min-width:0;background:#fff;border:0.5px solid #99f6e4;border-radius:8px;padding:9px 11px;font-size:13px;font-family:inherit;outline:none">'
+        +'<input id="pay-desc-note" type="text" placeholder="Motivo" style="flex:1.2;min-width:0;background:#fff;border:0.5px solid #99f6e4;border-radius:8px;padding:9px 11px;font-size:11px;font-family:inherit;outline:none">'
+        +'</div>'
+        +'<button style="width:100%;background:#0d9488;color:#fff;border:none;border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit" onclick="aplicarDesconto(\''+id+'\')">Aplicar desconto</button>'
+        +'</div>'));
   setTimeout(function(){var el=document.getElementById('pay-input');if(el)el.focus();},100);
 }
-function updatePayBtn(val){
+// Estorno de um pagamento parcial lancado por engano NO PERIODO CORRENTE.
+// O saldo volta a subir e fica um rastro no historico (nada some sem registro).
+// idx e a posicao do pagamento em loan.payments (lancamentos antigos podem nao
+// ter id, por isso a posicao — a janela e sempre redesenhada antes do clique).
+function estornoPagamento(id,idx){
+  var loan=loans.find(function(l){return l.id===id;});if(!loan)return;
+  idx=parseInt(idx,10);
+  var p=(loan.payments||[])[idx];
+  if(!p){showToast('Lançamento não encontrado (o período pode já ter sido fechado)','error');return;}
+  if(!confirm('Estornar o pagamento de '+fmt(p.value)+' lançado em '+fmtDate(p.date)+'?\n\nO saldo devedor volta a subir '+fmt(p.value)+'.\nO estorno fica registrado no histórico.'))return;
+  loan.payments.splice(idx,1);
+  loan.history=loan.history||[];
+  // pagamentoOriginal: a cópia do pagamento desfeito. Vai dentro do JSONB
+  // history (nenhuma coluna nova). Sem ela o razão não teria como recriar o
+  // pagamento no extrato nem fechar a conta — veja o comentário em _ledgerCalc.
+  loan.history.push({type:'estorno',date:today(),value:p.value,
+    pagamentoOriginal:{date:p.date,value:p.value,note:p.note||''},
+    note:'Estorno do pagamento de '+fmt(p.value)+' lançado em '+fmtDate(p.date)+(p.note?' ('+p.note+')':'')});
+  save(id);renderAll();               // save() ja marca o emprestimo como pendente de sincronizacao
+  showToast('↩️ Estorno de '+fmt(p.value)+' registrado · saldo '+fmt(getBalance(loan)));
+  openPay(id);                        // redesenha a janela com os numeros novos
+}
+// Desconto lancado pela janela de pagamento
+function aplicarDesconto(id){
+  var loan=loans.find(function(l){return l.id===id;});if(!loan)return;
+  if(loan.parcelas&&loan.parcelas.length){showToast('Empréstimo parcelado não aceita desconto por aqui','error');return;}
+  var v=parseFloat((document.getElementById('pay-desc')||{}).value)||0;
+  var motivo=((document.getElementById('pay-desc-note')||{}).value||'').trim();
+  if(v<=0){showToast('⚠️ Informe o valor do desconto','error');return;}
+  var bal=getBalance(loan);
+  if(v>bal+0.009){showToast('Desconto maior que o saldo ('+fmt(bal)+')','error');return;}
+  if(!motivo&&!confirm('Conceder '+fmt(v)+' de desconto sem informar o motivo?'))return;
+  if(!confirm('Conceder desconto de '+fmt(v)+'?\n\nSaldo: '+fmt(bal)+' → '+fmt(parseFloat((bal-v).toFixed(2)))+'\nNão entra como dinheiro recebido nem no lucro.'))return;
+  _regDesconto(loan,v,motivo);
+  save(id);renderAll();closeModal();
+  showToast('🏷️ Desconto de '+fmt(v)+' registrado'+(loan.paid?' · dívida encerrada':' · saldo '+fmt(getBalance(loan))));
+}
+function updatePayBtn(val,id){
   var v=parseFloat(val)||0;
   var btn=document.getElementById('btn-conf-pay');
   if(btn){btn.disabled=v<=0;btn.style.opacity=v<=0?'.4':'1';}
+  // Prévia ao vivo da divisão juro/abatimento — mesma conta que o razão fará.
+  var box=document.getElementById('pay-split');
+  if(!box)return;
+  var loan=id?loans.find(function(l){return l.id===id;}):null;
+  box.textContent=loan?previaPagamento(loan,v).texto:'';
 }
 function doPartialModal(id){
   var el=document.getElementById('pay-input');if(!el)return;
@@ -1529,48 +2419,85 @@ function doPayment(id,amount,note){
     loan.payments.push({id:uid(),date:today(),value:amount,note:note||''});
     showToast('💳 '+fmt(amount)+' registrado para '+loan.name);
   }
-  save();renderAll();closeModal();
+  save(id);renderAll();closeModal();
 }
 
 // ============================================================
 // RENOVAÇÃO MANUAL — usuário decide quando renovar
 // ============================================================
+var renewId=null;
 function openRenew(id){
   var loan=loans.find(function(l){return l.id===id;});if(!loan)return;
-  var balance=getBalance(loan);
+  renewId=id;
   var paidPeriod=getPaidPeriod(loan);
-  var juros=parseFloat((balance*loan.interest/100).toFixed(2));
-  var newTotal=parseFloat((balance*(1+loan.interest/100)).toFixed(2));
-  var newDue=addDays(today(),30);
   modal('<div class="modal-header"><span class="modal-title">🔄 Renovar Empréstimo</span><button class="modal-close" onclick="closeModal()">×</button></div>'
     +'<div class="renew-box">'
     +'<div class="renew-title">Encerrar período e cobrar juros sobre saldo</div>'
     +'<div style="font-size:11px;color:#92400e">O saldo devedor vai para o próximo mês com juros. Use isto quando o cliente não pagou no prazo ou quando quer fechar o período manualmente.</div>'
     +'</div>'
-    +'<div class="preview-box"><div class="preview-label">Cálculo</div>'
-    +(paidPeriod>0?'<div class="preview-row"><span>Já pago neste período</span><span style="color:#16a34a">'+fmt(paidPeriod)+'</span></div>':'')
+    +(paidPeriod>0?'<div style="font-size:11px;color:#16a34a;margin-bottom:7px">Já pago neste período: <b>'+fmt(paidPeriod)+'</b></div>':'')
+    +'<div style="border:0.5px solid #99f6e4;border-radius:10px;padding:11px;background:#f0fdfa;margin-bottom:9px">'
+    +'<div style="font-size:11px;font-weight:700;color:#0f766e;margin-bottom:3px">🏷️ Desconto negociado (opcional)</div>'
+    +'<div style="font-size:10px;color:#0d9488;margin-bottom:7px">Abatido do saldo <b>antes</b> de calcular o juro da renovação. Não conta como dinheiro recebido nem entra no lucro.</div>'
+    +'<div style="display:flex;gap:6px">'
+    +'<input id="rn-desc" type="number" inputmode="decimal" placeholder="Desconto (R$)" oninput="updateRenewPreview()" style="flex:1;min-width:0;background:#fff;border:0.5px solid #99f6e4;border-radius:8px;padding:9px 11px;font-size:13px;font-family:inherit;outline:none">'
+    +'<input id="rn-desc-note" type="text" placeholder="Motivo" style="flex:1.2;min-width:0;background:#fff;border:0.5px solid #99f6e4;border-radius:8px;padding:9px 11px;font-size:11px;font-family:inherit;outline:none">'
+    +'</div></div>'
+    +'<div id="renew-preview"></div>'
+    +'<div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="doRenew(\''+id+'\')">Confirmar renovação</button></div>');
+  updateRenewPreview();
+}
+function updateRenewPreview(){
+  var loan=loans.find(function(l){return l.id===renewId;});if(!loan)return;
+  var box=document.getElementById('renew-preview');if(!box)return;
+  var balance=getBalance(loan);
+  var desc=parseFloat((document.getElementById('rn-desc')||{}).value)||0;
+  if(desc<0)desc=0;
+  if(desc>balance)desc=balance;
+  var base=parseFloat((balance-desc).toFixed(2));
+  var juros=parseFloat((base*loan.interest/100).toFixed(2));
+  var newTotal=parseFloat((base+juros).toFixed(2));
+  var newDue=addDays(today(),30);
+  box.innerHTML='<div class="preview-box"><div class="preview-label">Cálculo</div>'
     +'<div class="preview-row"><span>Saldo devedor atual</span><span style="font-weight:700">'+fmt(balance)+'</span></div>'
+    +(desc>0?'<div class="preview-row"><span>🏷️ Desconto</span><span style="color:#0d9488">-'+fmt(desc)+'</span></div>':'')
+    +(desc>0?'<div class="preview-row"><span>Saldo após desconto</span><span style="font-weight:700">'+fmt(base)+'</span></div>':'')
     +'<div class="preview-row"><span>Juros '+loan.interest+'% sobre saldo</span><span style="color:#ef4444">+'+fmt(juros)+'</span></div>'
     +'<div class="preview-row total"><span>Novo total (próx. mês)</span><span style="color:#1d4ed8">'+fmt(newTotal)+'</span></div>'
     +'<div style="font-size:10px;color:#64748b;margin-top:4px">Novo vencimento: '+fmtDate(newDue)+'</div>'
-    +'</div>'
-    +'<div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="doRenew(\''+id+'\')">Confirmar renovação</button></div>');
+    +(base<=0?'<div style="font-size:10px;color:#0f766e;margin-top:4px">O desconto zera o saldo: a dívida será encerrada por acordo, sem renovação.</div>':'')
+    +'</div>';
 }
 function doRenew(id){
   var loan=loans.find(function(l){return l.id===id;});if(!loan)return;
+  // 1) desconto negociado (se houver) — abate o saldo antes do juro
+  var desc=parseFloat((document.getElementById('rn-desc')||{}).value)||0;
+  var dmot=((document.getElementById('rn-desc-note')||{}).value||'').trim();
+  if(desc>0){
+    var bal0=getBalance(loan);
+    if(desc>bal0+0.009){showToast('Desconto maior que o saldo ('+fmt(bal0)+')','error');return;}
+    if(!confirm('Renovar concedendo '+fmt(desc)+' de desconto?\n\nSaldo: '+fmt(bal0)+' → '+fmt(parseFloat((bal0-desc).toFixed(2)))+' antes do juro.'))return;
+    _regDesconto(loan,desc,dmot);
+    if(loan.paid){                       // desconto zerou tudo: nao ha o que renovar
+      save(id);renderAll();closeModal();
+      showToast('🏷️ Desconto de '+fmt(desc)+' — saldo zerado, dívida encerrada');
+      return;
+    }
+  }
+  // 2) renovacao normal: juro do mes cheio sobre o saldo
   var balance=getBalance(loan);
   var newTotal=parseFloat((balance*(1+loan.interest/100)).toFixed(2));
   // Move pagamentos do período para histórico
   (loan.payments||[]).forEach(function(p){loan.history.push({date:p.date,type:'pagamento_parcial',value:p.value,note:p.note||''});});
-  loan.history.push({date:today(),type:'renovacao',value:balance,
+  loan.history.push({date:today(),type:'renovacao',value:balance,rate:loan.interest,
     note:'Renovado. Saldo: '+fmt(balance)+'. Juros '+loan.interest+'%: '+fmt(balance*loan.interest/100)+'. Novo total: '+fmt(newTotal)});
   loan.currentAmount=newTotal;
   loan.originalAmount=balance;
   loan.startDate=today();
   loan.dueDate=addDays(today(),30);
   loan.payments=[];
-  save();renderAll();closeModal();
-  showToast('🔄 Renovado! Novo total: '+fmt(newTotal));
+  save(id);renderAll();closeModal();
+  showToast('🔄 Renovado! Novo total: '+fmt(newTotal)+(desc>0?' (desconto de '+fmt(desc)+')':''));
 }
 
 // ============================================================
@@ -1591,6 +2518,14 @@ function openEdit(id){
     return;
   }
   var amount=loanPrincipal(l);
+  var nRen=loanRenovacoes(l);
+  // Ja renovado: o saldo acumulado NAO pode ser recalculado do zero (perderia os juros).
+  var avisoEdit=nRen>0
+    ? '<div style="background:#eff6ff;border:0.5px solid #bfdbfe;border-radius:7px;padding:8px 10px;font-size:10px;color:#1d4ed8;margin-bottom:9px">'
+      +'Este empréstimo já foi renovado <b>'+nRen+' vez'+(nRen>1?'es':'')+'</b>. O saldo acumulado ('+fmt(getBalance(l))+') é <b>preservado</b>. '
+      +'Nome, telefone, endereço, observação e datas podem ser alterados à vontade. '
+      +'Se você mudar o valor emprestado ou o juros, só a <b>diferença</b> é aplicada ao saldo.</div>'
+    : '<div style="background:#fffbeb;border:0.5px solid #fde68a;border-radius:7px;padding:7px 10px;font-size:10px;color:#92400e;margin-bottom:9px">O total a receber é recalculado a partir do valor e do juros. Pagamentos já feitos são mantidos.</div>';
   modal('<div class="modal-header"><span class="modal-title">✏️ Editar Empréstimo</span><button class="modal-close" onclick="closeModal()">×</button></div>'
     +'<div class="field"><label>Nome</label><input id="ed-name" class="inp" type="text" value="'+esc(l.name)+'"></div>'
     +'<div class="field-row"><div class="field"><label>Telefone</label><input id="ed-phone" class="inp" type="tel" value="'+esc(l.phone||'')+'"></div>'
@@ -1602,7 +2537,7 @@ function openEdit(id){
     +'<div class="field-row"><div class="field"><label>Data início</label><input id="ed-start" class="inp" type="date" value="'+l.startDate+'"></div>'
     +'<div class="field"><label>Vencimento</label><input id="ed-due" class="inp" type="date" value="'+l.dueDate+'"></div></div>'
     +'<div class="field"><label>Observação</label><textarea id="ed-note" class="inp" style="resize:vertical;min-height:48px">'+esc(l.note||'')+'</textarea></div>'
-    +'<div style="background:#fffbeb;border:0.5px solid #fde68a;border-radius:7px;padding:7px 10px;font-size:10px;color:#92400e;margin-bottom:9px">O total a receber é recalculado a partir do valor e do juros. Pagamentos já feitos são mantidos.</div>'
+    +avisoEdit
     +'<div class="modal-actions"><button class="btn-secondary" onclick="closeModal()">Cancelar</button><button class="btn-primary" onclick="saveEdit(\''+id+'\')">Salvar</button></div>');
   updateEditPreview();
 }
@@ -1611,8 +2546,22 @@ function updateEditPreview(){
   var box=document.getElementById('ed-preview');if(!box)return;
   var amount=parseFloat((document.getElementById('ed-amount')||{}).value)||0;
   var rate=parseFloat((document.getElementById('ed-int')||{}).value)||0;
-  var total=amount*(1+rate/100);
   var paid=getPaidPeriod(l);
+  // Ja renovado: mostra saldo antes -> depois (so a diferenca entra)
+  if(loanRenovacoes(l)>0){
+    var antes=getBalance(l);
+    var dif=parseFloat((amount-loanPrincipal(l)).toFixed(2));
+    var delta=parseFloat((dif*(1+rate/100)).toFixed(2));
+    var depois=parseFloat((antes+delta).toFixed(2));
+    box.innerHTML='<div class="preview-box"><div class="preview-label">Saldo acumulado (preservado)</div>'
+      +'<div class="preview-row"><span>Saldo antes</span><span style="font-weight:700">'+fmt(antes)+'</span></div>'
+      +'<div class="preview-row"><span>Diferença no valor emprestado</span><span style="color:'+(dif<0?'#16a34a':'#ef4444')+'">'+(dif>=0?'+':'')+fmt(dif)+'</span></div>'
+      +'<div class="preview-row"><span>Aplicado ao saldo (com juros '+rate+'%)</span><span style="color:'+(delta<0?'#16a34a':'#ef4444')+'">'+(delta>=0?'+':'')+fmt(delta)+'</span></div>'
+      +'<div class="preview-row total"><span>Saldo depois</span><span style="color:#1d4ed8">'+fmt(depois)+'</span></div>'
+      +'</div>';
+    return;
+  }
+  var total=amount*(1+rate/100);
   box.innerHTML='<div class="preview-box"><div class="preview-label">Recalcular</div>'
     +'<div class="preview-row"><span>Valor emprestado</span><span>'+fmt(amount)+'</span></div>'
     +'<div class="preview-row"><span>Juros ('+rate+'%)</span><span style="color:#ef4444">+'+fmt(amount*rate/100)+'</span></div>'
@@ -1634,14 +2583,32 @@ function saveEdit(id){
     if(isNaN(interest))interest=l.interest;
     var start=document.getElementById('ed-start').value||l.startDate;
     var due=document.getElementById('ed-due').value||l.dueDate;
-    l.principal=parseFloat(amount.toFixed(2));
-    l.originalAmount=parseFloat(amount.toFixed(2));
-    l.interest=interest;
-    l.currentAmount=parseFloat((amount*(1+interest/100)).toFixed(2));
+    if(loanRenovacoes(l)===0){
+      // Nunca renovado: recalcular do zero esta certo (nao ha juros acumulado a perder)
+      l.principal=parseFloat(amount.toFixed(2));
+      l.originalAmount=parseFloat(amount.toFixed(2));
+      l.interest=interest;
+      l.currentAmount=parseFloat((amount*(1+interest/100)).toFixed(2));
+    }else{
+      // Ja renovado: o saldo acumulado e sagrado. So a DIFERENCA entra.
+      var antes=loanPrincipal(l);
+      var dif=parseFloat((amount-antes).toFixed(2));
+      l.interest=interest;
+      if(dif!==0){
+        var saldoAntes=l.currentAmount||0;
+        var delta=parseFloat((dif*(1+interest/100)).toFixed(2));
+        l.currentAmount=parseFloat((saldoAntes+delta).toFixed(2));
+        l.principal=parseFloat(amount.toFixed(2));
+        l.originalAmount=parseFloat(((l.originalAmount||0)+dif).toFixed(2));
+        l.history=l.history||[];
+        l.history.push({type:'ajuste',date:today(),value:delta,
+          note:'Ajuste do valor emprestado: '+fmt(antes)+' → '+fmt(amount)+'. Saldo '+(delta>=0?'+':'')+fmt(delta)+' (diferença de '+fmt(dif)+' com juros '+interest+'%). Saldo: '+fmt(saldoAntes)+' → '+fmt(l.currentAmount)});
+      }
+    }
     l.startDate=start;l.dueDate=due;
   }
   editingId=null;
-  save();renderAll();closeModal();showToast('✅ Atualizado!');
+  save(id);renderAll();closeModal();showToast('✅ Atualizado!');
 }
 
 
@@ -1652,6 +2619,7 @@ function openReceipt(id){
   var l=loans.find(function(x){return x.id===id;});if(!l)return;
   var balance=getBalance(l);
   var paidPeriod=getPaidPeriod(l);
+  var totalDesc=loanDescontos(l);
   var now=new Date().toLocaleDateString('pt-BR')+' '+new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
   var rc='<div id="rc" style="background:#fff;color:#111;border-radius:9px;padding:16px;font-family:monospace;font-size:12px;line-height:1.8;border:0.5px solid #e5e7eb;margin-bottom:12px">'
     +'<div style="font-size:13px;font-weight:700;text-align:center;margin-bottom:2px">COMPROVANTE</div>'
@@ -1666,6 +2634,7 @@ function openReceipt(id){
     +'<div style="display:flex;justify-content:space-between"><span>Emprestado:</span><span>'+fmt(l.originalAmount)+'</span></div>'
     +'<div style="display:flex;justify-content:space-between"><span>Juros:</span><span>'+l.interest+'%/mês</span></div>'
     +(paidPeriod>0?'<div style="display:flex;justify-content:space-between"><span>Já pago:</span><span style="color:#16a34a">'+fmt(paidPeriod)+'</span></div>':'')
+    +(totalDesc>0?'<div style="display:flex;justify-content:space-between"><span>🏷️ Desconto:</span><span>-'+fmt(totalDesc)+'</span></div>':'')
     +'<hr style="border:none;border-top:1px dashed #ccc;margin:5px 0">'
     +'<div style="display:flex;justify-content:space-between;font-weight:700;font-size:13px"><span>SALDO DEVEDOR:</span><span>'+fmt(balance)+'</span></div>'
     +'<hr style="border:none;border-top:1px dashed #ccc;margin:5px 0">'
@@ -1677,42 +2646,135 @@ function printReceipt(){var c=document.getElementById('rc');if(!c)return;var w=w
 function shareReceipt(id){
   var l=loans.find(function(x){return x.id===id;});if(!l)return;
   var balance=getBalance(l);var pp=getPaidPeriod(l);
-  var msg='🧾 *COMPROVANTE*\n\n👤 '+l.name+'\n📅 '+fmtDate(l.startDate)+'\n⏰ Vence: '+fmtDate(l.dueDate)+'\n💵 Original: '+fmt(l.originalAmount)+'\n📈 Juros: '+l.interest+'%/mês'+(pp>0?'\n✅ Já pago: '+fmt(pp):'')+'\n━━━━━━\n💰 *SALDO: '+fmt(balance)+'*';
+  var td=loanDescontos(l);
+  var msg='🧾 *COMPROVANTE*\n\n👤 '+l.name+'\n📅 '+fmtDate(l.startDate)+'\n⏰ Vence: '+fmtDate(l.dueDate)+'\n💵 Original: '+fmt(l.originalAmount)+'\n📈 Juros: '+l.interest+'%/mês'+(pp>0?'\n✅ Já pago: '+fmt(pp):'')+(td>0?'\n🏷️ Desconto: -'+fmt(td):'')+'\n━━━━━━\n💰 *SALDO: '+fmt(balance)+'*';
   window.open(waLink(l.phone)+'?text='+encodeURIComponent(msg),'_blank');
 }
 
+// Rotulo, cor e sinal de cada tipo de lancamento do historico.
+// Novos tipos: desconto (abate saldo, NAO e dinheiro recebido) e estorno
+// (pagamento lancado por engano e desfeito).
+function _histLabel(t,current){
+  if(t==='emprestimo'||t==='empréstimo')return{label:'💵 Empréstimo',cor:'#3b82f6',valCor:'#ef4444',sinal:'-'};
+  if(t==='pagamento_final')return{label:'✅ Quitado',cor:'#22c55e',valCor:'#22c55e',sinal:'+'};
+  if(t==='renovacao')return{label:'🔄 Renovação',cor:'#f59e0b',valCor:'#f59e0b',sinal:'+'};
+  if(t==='ajuste')return{label:'⚖️ Ajuste',cor:'#7c3aed',valCor:'#7c3aed',sinal:'+'};
+  if(t==='desconto')return{label:'🏷️ Desconto',cor:'#0d9488',valCor:'#0d9488',sinal:'-'};
+  if(t==='estorno')return{label:'↩️ Estorno',cor:'#dc2626',valCor:'#dc2626',sinal:'-'};
+  return{label:'💳 Pagamento'+(current?' (mês atual)':''),cor:'#22c55e',valCor:'#22c55e',sinal:'+'};
+}
+// Cores do extrato novo (o rótulo e o sinal vêm do ledger, não daqui).
+function _ledgerCores(t){
+  t=t||'';
+  if(t==='emprestimo'||t==='empréstimo')return{cor:'#3b82f6',valCor:'#ef4444'};
+  if(t==='renovacao')return{cor:'#f59e0b',valCor:'#f59e0b'};
+  if(t==='ajuste')return{cor:'#7c3aed',valCor:'#7c3aed'};
+  if(t==='desconto')return{cor:'#0d9488',valCor:'#0d9488'};
+  if(t==='estorno')return{cor:'#dc2626',valCor:'#dc2626'};
+  if(t.indexOf('pagamento')>=0)return{cor:'#22c55e',valCor:'#22c55e'};
+  return{cor:'#94a3b8',valCor:'#64748b'};
+}
 function openHistory(id){
-  var l=loans.find(function(x){return x.id===id;});if(!l)return;
+  var l=allRecords().find(function(x){return x.id===id;});if(!l)return;
+  var ehInad=loans.indexOf(l)<0;                       // veio da lista de inadimplentes
+  var parceled=!!(l.parcelas&&l.parcelas.length);
   var balance=getBalance(l);var paidPeriod=getPaidPeriod(l);
-  // Combina histórico + pagamentos atuais
-  var allEntries=(l.history||[]).map(function(h){return Object.assign({},h);});
-  (l.payments||[]).forEach(function(p){allEntries.push({date:p.date,type:'pagamento_parcial',value:p.value,note:p.note,current:true});});
-  allEntries.sort(function(a,b){return new Date(a.date)-new Date(b.date);});
-  var histHtml=allEntries.map(function(h){
-    var isLoan=h.type==='emprestimo'||h.type==='empréstimo';
-    var isFinal=h.type==='pagamento_final';
-    var isRenew=h.type==='renovacao';
-    var color=isLoan?'#3b82f6':isFinal?'#22c55e':isRenew?'#f59e0b':'#22c55e';
-    var label=isLoan?'💵 Empréstimo':isFinal?'✅ Quitado':isRenew?'🔄 Renovação':('💳 Pagamento'+(h.current?' (mês atual)':''));
-    return'<div class="hist-item" style="border-left-color:'+color+(h.current?';background:#fffbeb':'')+'"><div style="display:flex;justify-content:space-between;align-items:flex-start"><div><div style="font-size:12px;font-weight:600;color:'+color+'">'+label+'</div><div style="font-size:10px;color:#6b7280;margin-top:1px">'+fmtDate(h.date)+'</div></div><div style="font-size:12px;font-weight:700;color:'+(isLoan?'#ef4444':isRenew?'#f59e0b':'#22c55e')+'">'+(isLoan?'-':'+')+fmt(h.value)+'</div></div>'+(h.note?'<div style="font-size:10px;color:#6b7280;margin-top:4px;border-top:0.5px solid #e2e8f0;padding-top:4px">'+esc(h.note)+'</div>':'')+'</div>';
-  }).join('');
+  // ===== EXTRATO desenhado a partir do RAZÃO =====
+  // Uma linha por evento, na ordem real dos fatos, com o saldo resultante ao
+  // lado. A renovação NÃO leva sinal de dinheiro: ela não é entrada nem saída,
+  // é o saldo rolando com o juro do mês seguinte. Era esse "+R$ 1.300" que fazia
+  // o dono achar que o histórico não batia.
+  var lg=ledger(l);
+  var totalDesc=lg.descontoTotal;
+  var periodoAtual=null;
+  var histHtml=lg.linhas.map(function(li){
+    var m=_ledgerCores(li.tipo);
+    var sep='';
+    if(li.periodo!==periodoAtual){
+      periodoAtual=li.periodo;
+      sep='<div style="display:flex;align-items:center;gap:7px;margin:12px 0 6px">'
+        +'<div style="height:1px;flex:1;background:#e2e8f0"></div>'
+        +'<div style="font-size:8px;font-weight:700;color:#94a3b8;letter-spacing:1px">PERÍODO '+li.periodo+'</div>'
+        +'<div style="height:1px;flex:1;background:#e2e8f0"></div></div>';
+    }
+    // Rótulo. Na renovação o juro cobrado vai junto do texto, não na coluna do dinheiro.
+    var rot=esc(li.rotulo);
+    if(li.tipo==='renovacao')rot+=' <span style="font-weight:600;color:#b45309">· juro '+fmt(li.juroCobrado)+'</span>';
+    else if(li.tipo==='emprestimo'||li.tipo==='empréstimo')rot+=' <span style="font-weight:600;color:#b45309">· juro '+fmt(li.juroCobrado)+'</span>';
+    if(li.atual)rot+=' <span style="font-size:9px;color:#b45309;font-weight:700">(mês atual)</span>';
+    if(li.estornado)rot+=' <span style="font-size:9px;color:#dc2626;font-weight:700">(estornado)</span>';
+    // Coluna do dinheiro: só quem de fato movimentou caixa.
+    var valHtml=li.sinal
+      ?'<div style="font-size:12px;font-weight:700;color:'+m.valCor+'">'+(li.sinal==='-'?'−':'+')+fmt(li.valor)+'</div>'
+      :'<div style="font-size:11px;color:#cbd5e1">—</div>';
+    // A divisão do pagamento: quanto foi juro, quanto abateu a dívida.
+    var divisao='';
+    if(li.tipo&&li.tipo.indexOf('pagamento')>=0){
+      divisao=(li.parteCapital>0.004)
+        ?fmt(li.parteJuros)+' de juro · '+fmt(li.parteCapital)+' abateu a dívida'
+        :fmt(li.parteJuros)+' de juro · não abateu a dívida';
+    }else if(li.tipo==='estorno'&&!li.somenteRastro){
+      divisao='devolveu '+fmt(li.parteCapital)+' de abatimento e '+fmt(li.parteJuros)+' de juro';
+    }else if(li.tipo==='desconto'&&li.juroCobrado<-0.004){
+      divisao='perdoou '+fmt(-li.juroCobrado)+' de juro pendente';
+    }
+    return sep
+      +'<div class="hist-item" style="border-left-color:'+m.cor+(li.atual?';background:#fffbeb':'')+'">'
+      +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
+      +'<div style="min-width:0"><div style="font-size:12px;font-weight:600;color:'+m.cor+'">'+rot+'</div>'
+      +'<div style="font-size:10px;color:#6b7280;margin-top:1px">'+fmtDate(li.data)+'</div></div>'
+      +'<div style="text-align:right;flex-shrink:0">'+valHtml
+      +'<div style="font-size:10px;color:#94a3b8;margin-top:1px">saldo '+fmt(li.saldoDepois)+'</div></div>'
+      +'</div>'
+      +(divisao?'<div style="font-size:10px;color:#0f766e;font-weight:600;margin-top:3px">'+divisao+'</div>':'')
+      +(li.nota?'<div style="font-size:10px;color:#6b7280;margin-top:4px;border-top:0.5px solid #e2e8f0;padding-top:4px">'+esc(li.nota)+'</div>':'')
+      +'</div>';
+  }).join('')||'<div style="font-size:11px;color:#94a3b8;padding:6px 0">Nenhuma movimentação registrada.</div>';
+  // Rodapé com os totais do razão
+  histHtml+='<div style="margin-top:9px;padding:9px 10px;background:#f8fafc;border:0.5px solid #e2e8f0;border-radius:9px;font-size:11px;color:#334155;line-height:1.7">'
+    +'<b>Emprestei</b> '+fmt(lg.capitalEmprestado)+' · <b>Recebi</b> '+fmt(lg.recebidoTotal)
+    +' · <b>Juro ganho</b> <span style="color:#16a34a;font-weight:700">'+fmt(lg.jurosRecebido)+'</span>'
+    +' · <b>Desconto</b> '+fmt(lg.descontoTotal)+'</div>';
+  if(parceled){
+    histHtml+='<div style="font-size:10px;color:#94a3b8;margin-top:5px;line-height:1.5">Empréstimo parcelado: o saldo que vale é o da lista de parcelas acima — no extrato o saldo de cada linha é o total somado.</div>';
+  }
+  // Capital recuperado deste empréstimo (Tarefa 3)
+  var capHtml='<div style="font-size:8px;color:#1d4ed8;font-weight:700;letter-spacing:1px;margin-bottom:5px">CAPITAL RECUPERADO</div>'
+    +_capitalBox(lg.capitalEmprestado,lg.recebidoTotal,lg.emRisco)
+    +'<div style="height:11px"></div>';
   var docHtml='';
   if(l.docRG||l.docResidencia){
-    docHtml='<div style="margin-bottom:11px"><div style="font-size:8px;color:#1d4ed8;font-weight:700;letter-spacing:1px;margin-bottom:5px">DOCUMENTOS</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">'
-      +(l.docRG?'<div><div style="font-size:10px;color:#6b7280;margin-bottom:3px">🪪 RG/CNH</div><img id="histdoc-docRG" alt="Carregando..." style="width:100%;border-radius:6px;border:0.5px solid #e2e8f0"></div>':'')
-      +(l.docResidencia?'<div><div style="font-size:10px;color:#6b7280;margin-bottom:3px">🏠 Comprovante</div><img id="histdoc-docResidencia" alt="Carregando..." style="width:100%;border-radius:6px;border:0.5px solid #e2e8f0"></div>':'')
+    docHtml='<div style="margin-bottom:11px"><div style="font-size:8px;color:#1d4ed8;font-weight:700;letter-spacing:1px;margin-bottom:5px">DOCUMENTOS <span style="color:#94a3b8;font-weight:600;letter-spacing:0">· toque na foto para ampliar</span></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">'
+      +(l.docRG?'<div><div style="font-size:10px;color:#6b7280;margin-bottom:3px">🪪 RG/CNH</div><img id="histdoc-docRG" alt="Carregando..." onclick="openDocFull(\''+id+'\',\'docRG\')" style="width:100%;border-radius:6px;border:0.5px solid #e2e8f0;cursor:zoom-in"></div>':'')
+      +(l.docResidencia?'<div><div style="font-size:10px;color:#6b7280;margin-bottom:3px">🏠 Comprovante</div><img id="histdoc-docResidencia" alt="Carregando..." onclick="openDocFull(\''+id+'\',\'docResidencia\')" style="width:100%;border-radius:6px;border:0.5px solid #e2e8f0;cursor:zoom-in"></div>':'')
+      +'</div>'
+      +'<div style="display:flex;gap:6px;margin-top:6px">'
+      +(l.docRG?'<button class="abtn" style="flex:1;text-align:center" onclick="openDocFull(\''+id+'\',\'docRG\')">🔍 Ver RG em tela cheia</button>':'')
+      +(l.docResidencia?'<button class="abtn" style="flex:1;text-align:center" onclick="openDocFull(\''+id+'\',\'docResidencia\')">🔍 Ver comprovante</button>':'')
       +'</div></div>';
   }
+  // Parcelado: mostra a lista das parcelas (mesma da linha do empréstimo)
+  var parcHtml='';
+  if(parceled){
+    var pagas=l.parcelas.filter(function(p){return p.paid;}).length;
+    parcHtml='<div style="font-size:8px;color:#1d4ed8;font-weight:700;letter-spacing:1px;margin-bottom:5px">PARCELAS · '+pagas+'/'+l.parcelas.length+' pagas</div>'
+      +'<div style="border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:11px">'+renderParcelasList(l)+'</div>';
+  }
   modal('<div class="modal-header"><span class="modal-title">📋 Histórico</span><button class="modal-close" onclick="closeModal()">×</button></div>'
-    +'<div style="margin-bottom:10px"><div style="font-size:15px;font-weight:700">'+esc(l.name)+'</div>'+(l.phone?'<div style="font-size:11px;color:#64748b">📞 '+esc(l.phone)+'</div>':'')+(l.address?'<div style="font-size:10px;color:#64748b">📍 '+esc(l.address)+'</div>':'')+'</div>'
+    +'<div style="margin-bottom:10px"><div style="font-size:15px;font-weight:700">'+esc(l.name)+(ehInad?' <span style="font-size:10px;color:#b45309;font-weight:700">⚠️ INADIMPLENTE</span>':'')+'</div>'+(l.phone?'<div style="font-size:11px;color:#64748b">📞 '+esc(l.phone)+'</div>':'')+(l.address?'<div style="font-size:10px;color:#64748b">📍 '+esc(l.address)+'</div>':'')+'</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:10px">'
-    +'<div style="background:#f8fafc;border-radius:8px;padding:8px"><div style="font-size:8px;color:#9ca3af;margin-bottom:2px">ORIGINAL</div><div style="font-size:12px;font-weight:700">'+fmt(l.originalAmount)+'</div></div>'
+    +'<div style="background:#f0fdf4;border-radius:8px;padding:8px"><div style="font-size:8px;color:#9ca3af;margin-bottom:2px">JURO GANHO</div><div style="font-size:12px;font-weight:700;color:#16a34a">'+fmt(lg.jurosRecebido)+'</div></div>'
     +(paidPeriod>0?'<div style="background:#f0fdf4;border-radius:8px;padding:8px"><div style="font-size:8px;color:#9ca3af;margin-bottom:2px">PAGO (MÊS)</div><div style="font-size:12px;font-weight:700;color:#16a34a">'+fmt(paidPeriod)+'</div></div>':'')
+    +(totalDesc>0?'<div style="background:#f0fdfa;border-radius:8px;padding:8px"><div style="font-size:8px;color:#9ca3af;margin-bottom:2px">DESCONTOS</div><div style="font-size:12px;font-weight:700;color:#0d9488">-'+fmt(totalDesc)+'</div></div>':'')
     +'<div style="background:#eff6ff;border-radius:8px;padding:8px"><div style="font-size:8px;color:#9ca3af;margin-bottom:2px">SALDO</div><div style="font-size:12px;font-weight:700;color:#1d4ed8">'+fmt(balance)+'</div></div>'
     +'</div>'
+    +capHtml
     +docHtml
+    +parcHtml
     +'<div style="font-size:8px;color:#1d4ed8;font-weight:700;letter-spacing:1px;margin-bottom:7px">MOVIMENTAÇÕES</div>'+histHtml
-    +(!l.paid?'<button class="btn-primary" style="margin-top:10px" onclick="closeModal();openPay(\''+id+'\')">Registrar pagamento</button>':''));
+    +((!l.paid&&!ehInad&&!parceled)?'<button class="btn-primary" style="margin-top:10px" onclick="closeModal();openPay(\''+id+'\')">Registrar pagamento</button>':'')
+    +((!l.paid&&!ehInad)?'<button class="btn-secondary" style="width:100%;margin-top:7px;color:#b45309" onclick="moveToInad(\''+id+'\')">⚠️ Mover só este empréstimo para inadimplentes</button>'
+      +'<div style="font-size:9px;color:#94a3b8;margin-top:4px;line-height:1.5">Use quando o cliente tem vários empréstimos e só este travou. Os outros continuam ativos.</div>':''));
   // Carrega as fotos do IndexedDB (ou usa base64 legado direto)
   ['docRG','docResidencia'].forEach(function(f){
     var ref=l[f];if(!ref)return;
@@ -1721,24 +2783,83 @@ function openHistory(id){
     docGet(ref).then(function(data){if(data)img.src=data;else img.alt='(foto não encontrada)';}).catch(function(){img.alt='(erro ao abrir foto)';});
   });
 }
+// Foto do documento em tela cheia — desenhada dentro do proprio app (nada de
+// window.open com data URL, que muitos navegadores de celular bloqueiam).
+var _docFullZoom=false;
+function openDocFull(loanId,field){
+  var l=allRecords().find(function(x){return x.id===loanId;});if(!l)return;
+  var ref=l[field];if(!ref)return;
+  var titulo=(field==='docRG')?'🪪 RG / CNH':'🏠 Comprovante de residência';
+  closeDocFull();
+  _docFullZoom=false;
+  document.body.insertAdjacentHTML('beforeend','<div id="docview-overlay" style="position:fixed;inset:0;background:#0f172a;z-index:9500;display:flex;flex-direction:column">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:#1e293b;flex:0 0 auto">'
+    +'<div style="font-size:12px;font-weight:700;color:#f1f5f9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+titulo+' · '+esc(l.name)+'</div>'
+    +'<div style="display:flex;gap:6px;flex:0 0 auto">'
+    +'<button id="docview-zoom" onclick="toggleDocZoom()" style="background:#334155;border:none;color:#f1f5f9;border-radius:8px;padding:7px 11px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">🔍 Ampliar</button>'
+    +'<button onclick="closeDocFull()" style="background:#334155;border:none;color:#f1f5f9;border-radius:8px;padding:7px 11px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">✕ Fechar</button>'
+    +'</div></div>'
+    +'<div id="docview-scroll" style="flex:1;overflow:auto;-webkit-overflow-scrolling:touch;padding:10px;text-align:center">'
+    +'<img id="docview-img" alt="Carregando foto…" style="max-width:100%;height:auto;border-radius:8px">'
+    +'</div>'
+    +'<div style="padding:7px 12px;background:#1e293b;font-size:10px;color:#94a3b8;text-align:center;flex:0 0 auto">Use “Ampliar” ou o zoom de dois dedos para ler o documento.</div>'
+    +'</div>');
+  var img=document.getElementById('docview-img');if(!img)return;
+  if(isDataUrl(ref)){img.src=ref;return;}
+  docGet(ref).then(function(data){
+    if(data)img.src=data;
+    else img.alt='(foto não encontrada neste aparelho nem na nuvem)';
+  }).catch(function(){img.alt='(erro ao abrir a foto)';});
+}
+function toggleDocZoom(){
+  var img=document.getElementById('docview-img');if(!img)return;
+  _docFullZoom=!_docFullZoom;
+  img.style.maxWidth=_docFullZoom?'none':'100%';
+  img.style.width=_docFullZoom?'250%':'auto';
+  var b=document.getElementById('docview-zoom');
+  if(b)b.textContent=_docFullZoom?'🔎 Reduzir':'🔍 Ampliar';
+}
+function closeDocFull(){var ov=document.getElementById('docview-overlay');if(ov)ov.remove();}
 
 // ============================================================
 // INADIMPLENTES
 // ============================================================
+// Move UM emprestimo para inadimplentes (os outros do mesmo cliente ficam ativos).
+// Chamado pelo botao dentro de openHistory.
 function moveToInad(id){
   var loan=loans.find(function(l){return l.id===id;});if(!loan)return;
-  var motivo=prompt('Motivo (ex: sumiu, número desligado):')||'Sem contato';
+  var outros=loans.filter(function(l){return clientKey(l.name)===clientKey(loan.name)&&l.id!==id&&!l.paid;}).length;
+  var aviso='Mover só este empréstimo de '+loan.name+' ('+fmt(getBalance(loan))+') para inadimplentes?';
+  if(outros>0)aviso+='\n\nOs outros '+outros+' empréstimo(s) ativo(s) deste cliente continuam normais.';
+  if(loan.parcelas&&loan.parcelas.length)aviso+='\n\n⚠️ Empréstimo parcelado: as parcelas viram um saldo único de '+fmt(getBalance(loan))+'.';
+  if(!confirm(aviso))return;
+  var motivo=prompt('Motivo (ex: sumiu, número desligado):');
+  if(motivo===null)return;                  // usuario desistiu: nao move nada
+  motivo=motivo.trim()||'Sem contato';
+  var saldo=getBalance(loan);
+  _histPagamentosPeriodo(loan); // preserva no historico o que ele ja tinha pago
   inadimplentes.push({
     id:loan.id,name:loan.name,phone:loan.phone||'',address:loan.address||'',
-    originalAmount:loan.originalAmount,currentAmount:getBalance(loan),
+    originalAmount:loan.originalAmount,currentAmount:saldo,
     startDate:loan.startDate,dueDate:loan.dueDate,interest:loan.interest,
     docRG:loan.docRG||'',docResidencia:loan.docResidencia||'',
     motivo:motivo,movidoEm:today(),history:loan.history||[]
   });
   loans=loans.filter(function(l){return l.id!==id;});
+  // saiu de verdade da tabela emprestimos: sem isto ele volta no proximo pull
+  addTombstone('emprestimos',id);
   delete expandedCards[id];deleteConfirm=null;
-  saveInad();save();renderAll();closeModal();
+  saveInad(id);save();renderAll();closeModal();
   showToast('⚠️ Movido para inadimplentes');
+}
+// Move os pagamentos do periodo atual para o historico (nao se perde o que ja foi pago)
+function _histPagamentosPeriodo(loan){
+  if(!loan)return;
+  loan.history=loan.history||[];
+  (loan.payments||[]).forEach(function(p){
+    loan.history.push({date:p.date,type:'pagamento_parcial',value:p.value,note:p.note||''});
+  });
+  loan.payments=[];
 }
 function moveClientToInad(key){
   var clientLoans=loans.filter(function(l){return clientKey(l.name)===key&&!l.paid;});
@@ -1747,19 +2868,24 @@ function moveClientToInad(key){
   var motivo=prompt('Motivo para marcar '+nome+' como inadimplente (ex: sumiu, número desligado):');
   if(motivo===null)return;
   motivo=motivo.trim()||'Sem contato';
+  var movidos=[];
   clientLoans.forEach(function(loan){
+    var saldo=getBalance(loan);
+    _histPagamentosPeriodo(loan); // preserva no historico o que ele ja tinha pago
     inadimplentes.push({
       id:loan.id,name:loan.name,phone:loan.phone||'',address:loan.address||'',
-      originalAmount:loan.originalAmount,currentAmount:getBalance(loan),
+      originalAmount:loan.originalAmount,currentAmount:saldo,
       startDate:loan.startDate,dueDate:loan.dueDate,interest:loan.interest,
       docRG:loan.docRG||'',docResidencia:loan.docResidencia||'',
       motivo:motivo,movidoEm:today(),history:loan.history||[]
     });
+    movidos.push(loan.id);
+    addTombstone('emprestimos',loan.id); // saiu de verdade da tabela emprestimos
     delete expandedCards[loan.id];
   });
   loans=loans.filter(function(l){return!(clientKey(l.name)===key&&!l.paid);});
   delete expandedGroups[key];deleteConfirm=null;
-  saveInad();save();renderAll();
+  saveInad(movidos);save();renderAll();
   showToast('⚠️ '+nome+' movido para inadimplentes');
 }
 function renderInad(){
@@ -1795,9 +2921,10 @@ function renderInad(){
 }
 function reativarInad(id){
   var i=inadimplentes.find(function(x){return x.id===id;});if(!i)return;
-  loans.push({id:i.id,name:i.name,phone:i.phone,address:i.address,originalAmount:i.originalAmount,currentAmount:i.currentAmount,interest:i.interest,startDate:i.startDate,dueDate:i.dueDate,note:'Reativado',paid:false,payments:[],docRG:i.docRG||'',docResidencia:i.docResidencia||'',history:i.history||[]});
+  loans.push({id:i.id,name:i.name,phone:i.phone,address:i.address,principal:loanPrincipal(i),originalAmount:i.originalAmount,currentAmount:i.currentAmount,interest:i.interest,startDate:i.startDate,dueDate:i.dueDate,note:'Reativado',paid:false,payments:[],docRG:i.docRG||'',docResidencia:i.docResidencia||'',history:i.history||[]});
   inadimplentes=inadimplentes.filter(function(x){return x.id!==id;});
-  saveInad();save();renderAll();
+  addTombstone('inadimplentes',id); // saiu de verdade da tabela inadimplentes
+  saveInad();save(id);renderAll();
   showToast('✅ Reativado!');
 }
 function excluirInad(id){
@@ -1805,6 +2932,7 @@ function excluirInad(id){
   var i=inadimplentes.find(function(x){return x.id===id;});
   if(i){if(!isDataUrl(i.docRG))docDel(i.docRG);if(!isDataUrl(i.docResidencia))docDel(i.docResidencia);}
   inadimplentes=inadimplentes.filter(function(x){return x.id!==id;});
+  addTombstone('inadimplentes',id);
   saveInad();renderInad();updateInadBadge();
   showToast('Excluído');
 }
@@ -1833,6 +2961,17 @@ function reportFiltered(){
     if(_rStatus==='overdue'&&(l.paid||daysUntil(l.dueDate)>=0))return false;
     if(_rStatus==='paid'&&!l.paid)return false;
     if(q&&(l.name||'').toLowerCase().indexOf(q)<0)return false;
+    return true;
+  });
+}
+// Inadimplentes que entram no relatorio (mesmos filtros de periodo e nome).
+// Nos filtros "Ativos" e "Quitados" eles nao aparecem — nao sao nem um nem outro.
+function reportFilteredInad(){
+  if(_rStatus==='active'||_rStatus==='paid')return [];
+  var r=getReportRange();var q=(_rClient||'').trim().toLowerCase();
+  return (inadimplentes||[]).filter(function(i){
+    if(!loanActiveInRange(i,r.from,r.to))return false;
+    if(q&&(i.name||'').toLowerCase().indexOf(q)<0)return false;
     return true;
   });
 }
@@ -1865,31 +3004,55 @@ function renderReport(){
 }
 function renderReportBody(){
   var body=document.getElementById('report-body');if(!body)return;
+  var rr=getReportRange();
   var filtered=reportFiltered();
-  var totalCapital=filtered.reduce(function(s,l){return s+loanPrincipal(l);},0);
+  var fInad=reportFilteredInad(); // capital e juros de quem atrasou continuam contando
+  // Descontos concedidos DENTRO do periodo filtrado (nao sao receita nem capital:
+  // e o que se deixou de receber, entao aparece em card proprio)
+  var totalDesc=filtered.reduce(function(s,l){return s+descontosPeriodo(l,rr.from,rr.to);},0)
+    +fInad.reduce(function(s,i){return s+descontosPeriodo(i,rr.from,rr.to);},0);
+  var totalCapital=filtered.reduce(function(s,l){return s+loanPrincipal(l);},0)
+    +fInad.reduce(function(s,i){return s+loanPrincipal(i);},0);
   var totalAberto=filtered.filter(function(l){return!l.paid;}).reduce(function(s,l){return s+getBalance(l);},0);
-  var totalJuros=filtered.reduce(function(s,l){return s+loanJuros(l);},0);
+  var totalJuros=filtered.reduce(function(s,l){return s+loanJuros(l);},0)
+    +fInad.reduce(function(s,i){return s+loanJuros(i);},0);
   var vencidos=filtered.filter(function(l){return!l.paid&&daysUntil(l.dueDate)<0;}).length;
   var quitados=filtered.filter(function(l){return l.paid;}).length;
   var ativos=filtered.filter(function(l){return!l.paid;}).length;
   var cn={};filtered.forEach(function(l){cn[clientKey(l.name)]=1;});
   var nClients=Object.keys(cn).length;
-  function mCard(label,val,color){
-    return'<div style="background:#fff;border:0.5px solid #e2e8f0;border-radius:11px;padding:10px 12px">'
+  function mCard(label,val,color,largo,sub){
+    return'<div style="background:#fff;border:0.5px solid #e2e8f0;border-radius:11px;padding:10px 12px'+(largo?';grid-column:1/-1':'')+'">'
       +'<div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px">'+label+'</div>'
-      +'<div style="font-size:15px;font-weight:800;color:'+(color||'#1e293b')+'">'+val+'</div></div>';
+      +'<div style="font-size:15px;font-weight:800;color:'+(color||'#1e293b')+'">'+val+'</div>'
+      +(sub?'<div style="font-size:9px;color:#94a3b8;margin-top:2px">'+sub+'</div>':'')+'</div>';
   }
   var html='<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;padding:10px 12px 6px">'
     +mCard('Capital emprestado',fmt(totalCapital),'#1d4ed8')
     +mCard('Em aberto',fmt(totalAberto),'#d97706')
     +mCard('Juros ganhos',fmt(totalJuros),'#16a34a')
     +mCard('Emprestimos',filtered.length+' · '+nClients+' cliente'+(nClients!==1?'s':''),'#374151')
+    +mCard('Descontos concedidos',(totalDesc>0?'-':'')+fmt(totalDesc),totalDesc>0?'#0d9488':'#94a3b8',true,'Abatido do saldo por acordo — não é dinheiro recebido nem entra no lucro')
     +'</div>';
   html+='<div style="display:flex;gap:6px;padding:0 12px 8px">'
     +'<div style="flex:1;background:#f0fdf4;border:0.5px solid #bbf7d0;border-radius:9px;padding:7px;text-align:center"><div style="font-size:13px;font-weight:800;color:#16a34a">'+quitados+'</div><div style="font-size:9px;color:#15803d">Quitados</div></div>'
     +'<div style="flex:1;background:#eff6ff;border:0.5px solid #bfdbfe;border-radius:9px;padding:7px;text-align:center"><div style="font-size:13px;font-weight:800;color:#2563eb">'+ativos+'</div><div style="font-size:9px;color:#1d4ed8">Ativos</div></div>'
     +'<div style="flex:1;background:#fef2f2;border:0.5px solid #fca5a5;border-radius:9px;padding:7px;text-align:center"><div style="font-size:13px;font-weight:800;color:#dc2626">'+vencidos+'</div><div style="font-size:9px;color:#991b1b">Vencidos</div></div>'
+    +'<div style="flex:1;background:#fef2f2;border:0.5px solid #fecaca;border-radius:9px;padding:7px;text-align:center"><div style="font-size:13px;font-weight:800;color:#b45309">'+fInad.length+'</div><div style="font-size:9px;color:#92400e">Inadimplentes</div></div>'
     +'</div>';
+  // Como os clientes do filtro se comportam. Conta CLIENTE, não empréstimo —
+  // por isso passa pelo clientKey. Some quando não há nenhum classificado.
+  var nSoJuro=0,nAmortiza=0;
+  Object.keys(cn).forEach(function(k){
+    var t=clientPerfil(k).tipo;
+    if(t==='so_juro')nSoJuro++;else if(t==='amortiza')nAmortiza++;
+  });
+  if(nSoJuro||nAmortiza){
+    var partes=[];
+    if(nSoJuro)partes.push(nSoJuro+(nSoJuro===1?' paga':' pagam')+' só o juro');
+    if(nAmortiza)partes.push(nAmortiza+(nAmortiza===1?' vai':' vão')+' abatendo');
+    html+='<div style="padding:0 12px 8px;font-size:10px;color:#94a3b8">'+partes.join(' · ')+'</div>';
+  }
   if(!filtered.length){
     html+='<div class="empty-state" style="padding:30px 0"><div class="empty-icon">🔍</div><div style="font-weight:600">Nenhum resultado</div><div style="font-size:11px;margin-top:3px">Ajuste os filtros acima</div></div>';
   }else{
