@@ -1006,7 +1006,11 @@ function daysUntil(s){var n=new Date();n.setHours(0,0,0,0);return Math.ceil((new
 function clientKey(name){return(name||'').trim().toLowerCase();}
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function showToast(msg,type){var t=document.createElement('div');t.className='toast '+(type||'');t.textContent=msg;document.getElementById('toast-container').appendChild(t);setTimeout(function(){t.remove();},3500);}
-function closeModal(){document.getElementById('modal-container').innerHTML='';}
+function closeModal(){
+  // fechar a janela tem que derrubar o teclado junto, senão ele fica na tela
+  if(typeof _fecharTeclado==='function')_fecharTeclado();
+  document.getElementById('modal-container').innerHTML='';
+}
 function modal(html){document.getElementById('modal-container').innerHTML='<div class="overlay" onclick="if(event.target===this)closeModal()"><div class="modal">'+html+'</div></div>';}
 
 // ============================================================
@@ -1252,12 +1256,26 @@ function updateAddValPreview(){
     +'<div class="preview-row"><span>Juros ('+l.interest+'%)</span><span style="color:var(--rd)">+'+fmt(amt*l.interest/100)+'</span></div>'
     +'<div class="preview-row total"><span>Novo saldo</span><span style="color:var(--ac)">'+fmt(getBalance(l)+add)+'</span></div></div>';
 }
+// Adicionar valor mexe no dinheiro emprestado, então PEDE CONFIRMAÇÃO.
+// Sem isso, um toque a mais no botão — coisa fácil com o teclado cobrindo a
+// tela — somava o mesmo valor de novo, e de novo, inflando o empréstimo.
 function doAddValue(id){
   var l=loans.find(function(x){return x.id===id;});if(!l)return;
   if(l.parcelas&&l.parcelas.length){showToast('Empréstimo parcelado não aceita adição','error');return;}
   var amt=parseFloat((document.getElementById('av-amount')||{}).value);
   if(isNaN(amt)||amt<=0){showToast('Informe o valor','error');return;}
   var date=(document.getElementById('av-date')||{}).value||today();
+  _fecharTeclado();
+  var novoSaldo=_r2(getBalance(l)+amt*(1+l.interest/100));
+  pedirConfirmacao({
+    titulo:'Emprestar mais '+fmt(amt)+' para '+l.name+'?',
+    texto:'Sai '+fmt(amt)+' do seu bolso agora. Com o juro de '+l.interest+'%, o saldo passa de '
+      +fmt(getBalance(l))+' para '+fmt(novoSaldo)+'.',
+    ok:'Sim, emprestar'
+  },function(){_doAddValueExec(id,amt,date);});
+}
+function _doAddValueExec(id,amt,date){
+  var l=loans.find(function(x){return x.id===id;});if(!l)return;
   var add=parseFloat((amt*(1+l.interest/100)).toFixed(2));
   l.principal=parseFloat(((l.principal!=null?l.principal:loanPrincipal(l))+amt).toFixed(2));
   l.originalAmount=parseFloat(((l.originalAmount||0)+amt).toFixed(2));
@@ -2644,8 +2662,27 @@ function fichaCorpo(key,op){
       +'</div></div>';
   }
 
+  // ---- sugestão de renovação, quando é o passo natural ----
+  // O botão Renovar já existe entre as quatro ações, mas ficava perdido: quem
+  // acabou de receber só o juro não achava o caminho para rolar o mês. Aqui a
+  // conta aparece pronta, no momento em que ela faz sentido.
+  var _parcelado=!!(alvo.parcelas&&alvo.parcelas.length);
+  var _pagoPer=getPaidPeriod(alvo), _atraso=daysUntil(alvo.dueDate);
+  if(!_parcelado&&bal>0.009&&(_pagoPer>0||_atraso<0)){
+    var _juroNovo=_r2(bal*alvo.interest/100), _novoTotal=_r2(bal+_juroNovo);
+    html+='<div class="bloco" style="margin-top:11px;border-left:3px solid var(--ac);padding:13px 15px">'
+      +'<div style="font-size:14px;font-weight:700;margin-bottom:3px">'
+      +(_pagoPer>0?'Recebeu '+fmt(_pagoPer)+' neste mês. Rolar o resto?'
+                 :'Venceu há '+Math.abs(_atraso)+' dia'+(Math.abs(_atraso)>1?'s':'')+'. Rolar para o próximo mês?')+'</div>'
+      +'<div style="font-size:12.5px;color:var(--dim);line-height:1.5">Sobra '+fmt(bal)
+      +'. Com o juro de '+alvo.interest+'% vira <span class="mono" style="color:var(--tx);font-weight:600">'
+      +fmt(_novoTotal)+'</span>, vencendo em '+_dm(addDays(today(),30))+'.</div>'
+      +'<button class="btn btn-ac" style="margin-top:11px" onclick="openRenew(\''+_js(alvo.id)+'\')">'
+      +sv(I.cycle,17)+'Renovar para o próximo mês</button></div>';
+  }
+
   // ---- as quatro ações ----
-  var parcelado=!!(alvo.parcelas&&alvo.parcelas.length);
+  var parcelado=_parcelado;
   html+='<div class="acoes">'
     +(bal>0.009&&!parcelado
       ?'<button class="acao pri" onclick="abrirReceber(\''+_js(alvo.id)+'\')">'+sv(I.check,18)+'Receber</button>'
