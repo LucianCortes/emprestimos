@@ -523,9 +523,12 @@ try{
 // marca tudo como pendente (conservador: em caso de duvida, o aparelho manda).
 function save(touched){
   _ledgerInvalidate();                 // qualquer gravacao invalida o razao em cache
-  loans.forEach(upsertClient);
+  var cliTocados=[];
+  loans.forEach(function(l){var id=upsertClient(l);if(id)cliTocados.push(id);});
   markDirty('emprestimos',_idList(touched,loans));
-  markDirty('clientes',clients.map(function(c){return c.id;}));
+  // So os clientes realmente criados/alterados. Marcar a lista toda fazia o
+  // aparelho vencer a nuvem sempre nessa tabela.
+  markDirty('clientes',touched==='*'?clients.map(function(c){return c.id;}):cliTocados);
   _saveLocal();
   cloudQueue();
 }
@@ -565,11 +568,16 @@ function _saveInadLocal(){
   try{localStorage.setItem('emp_inad_v1',JSON.stringify(inadimplentes));}
   catch(e){showToast('⚠️ Nao foi possivel salvar inadimplentes no aparelho.','error');}
 }
+// Devolve o id do cliente criado ou alterado — nulo quando nada mudou.
+// Serve para marcar sujo so quem mexeu, em vez da lista inteira.
 function upsertClient(l){
   var k=clientKey(l.name);
   var ex=clients.find(function(c){return clientKey(c.name)===k;});
-  if(!ex)clients.push({id:l.id,name:l.name,phone:l.phone||'',address:l.address||''});
-  else{if(l.phone)ex.phone=l.phone;if(l.address)ex.address=l.address;}
+  if(!ex){clients.push({id:l.id,name:l.name,phone:l.phone||'',address:l.address||''});return l.id;}
+  var mudou=false;
+  if(l.phone&&ex.phone!==l.phone){ex.phone=l.phone;mudou=true;}
+  if(l.address&&ex.address!==l.address){ex.address=l.address;mudou=true;}
+  return mudou?ex.id:null;
 }
 
 // ============================================================
@@ -585,7 +593,11 @@ function _lsGet(k,def){try{var v=JSON.parse(localStorage.getItem(k)||'null');ret
 function _lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
 // Normaliza o argumento "touched": undefined => todos os ids do array
 function _idList(touched,arr){
-  if(touched==null)return (arr||[]).map(function(o){return o.id;});
+  // null  => nada mudou de fato (nao marca nada como sujo)
+  // '*'   => tudo (so a restauracao de backup usa isso)
+  // id/[] => exatamente o que mudou
+  if(touched==='*')return (arr||[]).map(function(o){return o.id;});
+  if(touched==null)return [];
   return (Array.isArray(touched)?touched:[touched]);
 }
 // ---- sujos ----
@@ -767,6 +779,9 @@ function cloudPull(){
     migrateLoans(loans);
     _ledgerInvalidate();               // veio coisa nova da nuvem: refaz o razao
     _saveLocal(); _saveInadLocal();
+    // Só agora, com os dados de verdade na mão, os juros automáticos podem
+    // correr. Antes isto rodava no cache velho, antes da fusão.
+    accrueTudo();
     renderAll(); updateInadBadge();
     migrateDocsToCloud();
     // sobrou algo feito offline (ou alguma exclusao)? sobe agora.
@@ -933,16 +948,16 @@ function isDataUrl(v){return typeof v==='string'&&v.indexOf('data:')===0;}
 // Migra fotos antigas em base64 (gravadas no próprio registro) para o cache/nuvem.
 function migrateDocsToIDB(){
   if(!window.indexedDB)return;
-  var pending=[];
+  var pending=[],tocadosDocs=[];
   loans.forEach(function(l){
     ['docRG','docResidencia'].forEach(function(f){
       if(isDataUrl(l[f])){
         var key='doc_'+l.id+'_'+f;var data=l[f];
-        l[f]=key;pending.push(docSet(key,data));
+        l[f]=key;if(tocadosDocs.indexOf(l.id)<0)tocadosDocs.push(l.id);pending.push(docSet(key,data));
       }
     });
   });
-  if(pending.length)Promise.all(pending).then(function(){save();}).catch(function(){});
+  if(pending.length)Promise.all(pending).then(function(){save(tocadosDocs);}).catch(function(){});
 }
 // Sobe para a nuvem as fotos que hoje só existem no aparelho (executa uma vez por aparelho).
 function migrateDocsToCloud(){
@@ -1156,7 +1171,7 @@ function syncParceledLoan(l){
   if(un.length)l.dueDate=un[0].dueDate;
 }
 function accrueParcelas(){
-  var changed=false;
+  var changed=false, tocados=[];
   loans.forEach(function(l){
     if(!l.parcelas||!l.parcelas.length)return;
     l.parcelas.forEach(function(p){
@@ -1171,11 +1186,15 @@ function accrueParcelas(){
         // rate: congela a taxa usada AGORA, para o passado nao mudar se a taxa mudar
         l.history.push({date:today(),type:'renovacao',value:before,rate:l.interest,note:'Parcela '+p.n+': juros '+l.interest+'%: +'+fmt(juros)+'. Novo saldo da parcela: '+fmt(p.currentAmount)});
         changed=true;guard++;
+        if(tocados.indexOf(l.id)<0)tocados.push(l.id);
       }
     });
     syncParceledLoan(l);
   });
-  if(changed)save();
+  // Marca sujo SO o emprestimo que rendeu juro. Antes isto era save() sem
+  // argumento, que marcava a base inteira e fazia este aparelho vencer a
+  // nuvem na fusao — foi assim que o celular e o computador se separaram.
+  if(changed)save(tocados);
   return changed;
 }
 function payParcela(loanId,pid){
@@ -1716,7 +1735,7 @@ function inRange(ds,from,to){if(!ds)return false;if(from&&ds<from)return false;i
 function loanActiveInRange(l,from,to){if(!from&&!to)return true;if(inRange(l.startDate,from,to))return true;if((l.history||[]).some(function(h){return inRange(h.date,from,to);}))return true;return(l.payments||[]).some(function(p){return inRange(p.date,from,to);});}
 function clientEvents(ls,from,to){var ev=[];ls.forEach(function(l){(l.history||[]).forEach(function(h){var t=h.type||'';var kind=(t.indexOf('emprest')>=0)?'borrow':(t.indexOf('pagamento')>=0||t==='pay')?'pay':(t.indexOf('renov')>=0||t==='renew')?'renew':'other';if((!from&&!to)||inRange(h.date,from,to))ev.push({date:h.date,kind:kind,value:h.value||0});});(l.payments||[]).forEach(function(p){if((!from&&!to)||inRange(p.date,from,to))ev.push({date:p.date,kind:'pay',value:p.value||0});});});ev.sort(function(a,b){return new Date(b.date+'T00:00:00')-new Date(a.date+'T00:00:00');});return ev;}
 // Juros composto automatico dos inadimplentes: a cada mes vencido, rola +30 dias e acumula juros sobre o saldo
-function accrueInadimplentes(){var changed=false;(inadimplentes||[]).forEach(function(i){if(i.interest==null||!i.dueDate)return;var guard=0;while(daysUntil(i.dueDate)<0&&guard<600){var before=parseFloat(i.currentAmount)||0;var juros=parseFloat((before*(i.interest/100)).toFixed(2));i.currentAmount=parseFloat((before+juros).toFixed(2));i.dueDate=addDays(i.dueDate,30);i.history=i.history||[];i.history.push({date:today(),type:'renovacao',value:before,rate:i.interest,note:'Juros de inadimplencia '+i.interest+'%: +'+fmt(juros)+'. Novo saldo: '+fmt(i.currentAmount)});i.lastAccrual=today();changed=true;guard++;}});if(changed)saveInad();return changed;}
+function accrueInadimplentes(){var changed=false,tocados=[];(inadimplentes||[]).forEach(function(i){if(i.interest==null||!i.dueDate)return;var guard=0;while(daysUntil(i.dueDate)<0&&guard<600){var before=parseFloat(i.currentAmount)||0;var juros=parseFloat((before*(i.interest/100)).toFixed(2));i.currentAmount=parseFloat((before+juros).toFixed(2));i.dueDate=addDays(i.dueDate,30);i.history=i.history||[];i.history.push({date:today(),type:'renovacao',value:before,rate:i.interest,note:'Juros de inadimplencia '+i.interest+'%: +'+fmt(juros)+'. Novo saldo: '+fmt(i.currentAmount)});i.lastAccrual=today();changed=true;if(tocados.indexOf(i.id)<0)tocados.push(i.id);guard++;}});if(changed)saveInad(tocados);return changed;}
 // Link WhatsApp sem duplicar o DDI 55
 function waLink(phone){
   var p=(phone||'').replace(/\D/g,'');
@@ -1875,7 +1894,7 @@ function _deleteLoanExec(id){
   addTombstone('emprestimos',id); // unica coisa que autoriza apagar na nuvem
   delete expandedCards[id];
   deleteConfirm=null;
-  save();renderAll();
+  save([]);renderAll();   // [] de proposito: o id virou tombstone, nao pode ser marcado sujo
   showToast('🗑️ Empréstimo excluído');
 }
 
@@ -1921,12 +1940,21 @@ function updateInadBadge(){
 // ============================================================
 // PIN
 // ============================================================
+// Os juros automaticos (parcela vencida e inadimplente) SO podem rodar depois
+// que os dados de verdade chegaram. Rodar no cache velho, antes da fusao, era o
+// que fazia um aparelho lancar juro em cima de saldo desatualizado e depois
+// empurrar isso por cima do outro.
+function accrueTudo(){
+  var a=accrueInadimplentes();
+  var b=accrueParcelas();
+  return a||b;
+}
 function initApp(){
   load();                 // carrega o cache do aparelho (instantâneo)
   migrateDocsToIDB();
-  accrueInadimplentes();
-  accrueParcelas();
-  if(!cloudOn){           // biblioteca da nuvem não carregou: modo offline (só aparelho)
+  if(!cloudOn){
+    // biblioteca da nuvem não carregou: modo offline (só o aparelho)
+    accrueTudo();         // sem nuvem, o cache é a única verdade que existe
     enterApp();
     setTimeout(function(){showToast('Sem nuvem agora — usando dados do aparelho.','warn');},800);
     return;
@@ -1944,6 +1972,7 @@ function initApp(){
     }
   }).catch(function(){
     // Sem internet para validar a sessão: deixa usar offline com o cache
+    accrueTudo();
     enterApp();
     setTimeout(function(){showToast('Sem conexão — usando dados do aparelho.','warn');},800);
   });
@@ -4291,7 +4320,7 @@ function doPayAll(key){
   var note=(document.getElementById('payall-note')||{}).value||'';
   if(!val||val<=0){showToast('Informe o valor','error');return;}
   var clientLoans=loans.filter(function(l){return clientKey(l.name)===key&&!l.paid;});
-  var remaining=val;
+  var remaining=val, pagos=[];
   clientLoans.sort(function(a,b){return new Date(a.dueDate)-new Date(b.dueDate);});
   clientLoans.forEach(function(loan){
     if(remaining<=0)return;
@@ -4327,8 +4356,9 @@ function doPayAll(key){
     }else{
       loan.payments.push({id:Date.now()+'_'+loan.id,date:today(),value:pay,note:note||'Pagar tudo parcial'});
     }
+    if(pagos.indexOf(loan.id)<0)pagos.push(loan.id);
   });
-  save();renderAll();closeModal();
+  save(pagos);renderAll();closeModal();
   showToast('✅ Pagamento de '+fmt(val)+' registrado!');
 }
 
@@ -4383,19 +4413,32 @@ function markBackup(){localStorage.setItem('emp_last_backup',String(Date.now()))
 function downloadBackup(){buildBackup().then(function(obj){var data=JSON.stringify(obj,null,2);var blob=new Blob([data],{type:'application/json'});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='emprestimos-'+today()+'.json';a.click();URL.revokeObjectURL(url);markBackup();showToast('📥 Backup baixado!');});}
 function copyBackup(){buildBackup().then(function(obj){navigator.clipboard.writeText(JSON.stringify(obj)).then(function(){markBackup();showToast('📋 Copiado!');});});}
 function loadFile(e){var f=e.target.files[0];if(!f)return;var r=new FileReader();r.onload=function(ev){var el=document.getElementById('restore-input');if(el)el.value=ev.target.result;};r.readAsText(f);}
+// Marca para exclusão tudo que existe hoje no aparelho e não veio no arquivo.
+function _tombstonarAusentes(tabela,atuais,doArquivo){
+  var vivos={};
+  (doArquivo||[]).forEach(function(o){if(o&&o.id)vivos[o.id]=1;});
+  (atuais||[]).forEach(function(o){if(o&&o.id&&!vivos[o.id])addTombstone(tabela,o.id);});
+}
 function restoreBackup(){
   var raw=(document.getElementById('restore-input')||{}).value||'';
   if(!raw.trim()){showToast('Cole os dados primeiro','error');return;}
   try{
     var p=JSON.parse(raw);
     if(!Array.isArray(p.loans))throw new Error('inválido');
+    // Restaurar significa "este arquivo passa a ser a verdade". O que existe
+    // aqui e NAO esta no arquivo vira exclusao de verdade — sem isto, esses
+    // registros sobreviviam na nuvem e voltavam na proxima sincronizacao,
+    // que era como um aparelho com dados errados contaminava o outro.
+    _tombstonarAusentes('emprestimos',loans,p.loans);
+    _tombstonarAusentes('clientes',clients,p.clients||[]);
+    _tombstonarAusentes('inadimplentes',inadimplentes,p.inadimplentes||[]);
     loans=p.loans;clients=p.clients||[];inadimplentes=p.inadimplentes||[];
     migrateLoans(loans);
     // Devolve as fotos do backup para o IndexedDB
     var docs=p.docs||{};var keys=Object.keys(docs);
     var writeDocs=keys.length?Promise.all(keys.map(function(k){return docSet(k,docs[k]).catch(function(){});})):Promise.resolve();
     writeDocs.then(function(){
-      save();saveInad();renderAll();closeModal();
+      save('*');saveInad('*');renderAll();closeModal();
       showToast('✅ '+loans.length+' empréstimos restaurados!');
     });
   }catch(e){showToast('Arquivo inválido','error');}
