@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Controle de Empréstimos</title>
+<!-- D1 — APP INSTALAVEL QUE ABRE SEM INTERNET.
+     O manifesto diz ao celular que isto e um aplicativo (nome, icone, cores) e
+     nao apenas um atalho de site. Caminho RELATIVO porque o app e publicado
+     numa subpasta do GitHub Pages. O registro do service worker fica no fim do
+     arquivo, junto com o resto do codigo. -->
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#0A0C10">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Empréstimos">
 <!-- Tema antes de qualquer pintura: sem isto a tela pisca no tema errado
      quando o dono forçou claro/escuro diferente do aparelho. -->
 <script id="tema-boot">
@@ -446,6 +456,13 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
       <button class="ico-ac" onclick="openForm()" aria-label="Novo empréstimo" id="btn-novo"></button>
     </header>
     <div id="sync-status" style="font-size:11px;color:var(--dim2);padding:4px 14px 0;transition:opacity .4s;opacity:0;min-height:0"></div>
+    <!-- D8 — AVISO DE GRAVACAO FALHADA.
+         Quando o armazenamento do aparelho enche, a fila de pendencias nao e
+         gravada e o lancamento nunca sobe para a nuvem. Este aviso fica FIXO na
+         tela ate uma gravacao dar certo de novo — nada de falhar em silencio. -->
+    <div id="aviso-gravacao" role="alert" style="display:none;margin:8px 14px 0;padding:10px 12px;
+         border-radius:10px;background:var(--rdS);border:1px solid var(--rd);color:var(--rd);
+         font-size:12px;font-weight:600;line-height:1.45"></div>
 
     <!-- CARTEIRA -->
     <div id="screen-home" class="screen active">
@@ -493,19 +510,89 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 
 <script>
 // ============================================================
+// CONFIGURAÇÃO — AS REGRAS DO SEU NEGÓCIO
+// ============================================================
+// Este é o único lugar que você precisa mexer para mudar as regras
+// do app. Troque só o valor depois dos dois-pontos (:) e não apague
+// as vírgulas. Depois de mudar, feche e abra o app de novo.
+//
+// ATENÇÃO: mexer aqui muda como o app calcula daqui para a frente.
+// Empréstimos que já estão lançados continuam com as datas que já
+// receberam — o valor novo vale para o que for lançado ou renovado
+// depois da mudança.
+var CONFIG = {
+
+  // De quantos em quantos dias o empréstimo vence e o juro corre.
+  // É o "mês" do app. Hoje: 30 dias.
+  // Se você trocar para 15, todo empréstimo novo vencerá em 15 dias
+  // e o juro passará a ser cobrado de 15 em 15 dias. É o valor mais
+  // pesado deste bloco: mexe em vencimento, renovação e juro.
+  CICLO_DIAS: 30,
+
+  // Os botões de juro que aparecem no formulário de novo empréstimo.
+  // São textos entre aspas, separados por vírgula. Pode tirar, pôr ou
+  // reordenar. Não precisa incluir todos: sempre existe o botão
+  // "Outro" para digitar uma taxa que não está na lista.
+  TAXAS: ['10','15','20','25','30'],
+
+  // Os botões de parcelamento do formulário (1x, 2x, 3x...).
+  // Mesma ideia: textos entre aspas, separados por vírgula.
+  PARCELAS: ['1','2','3','4','6','12'],
+
+  // O juro que já vem marcado quando você lança um empréstimo para
+  // um cliente NOVO. Para cliente que você já atendeu, o app usa a
+  // taxa que aquele cliente já tinha e ignora este valor.
+  // Escreva entre aspas, como nos botões acima.
+  TAXA_PADRAO: '30',
+
+  // Tamanho máximo, em pontos de tela, das fotos de documento (RG,
+  // comprovante). A foto é reduzida até caber neste tamanho antes de
+  // ser guardada. Número maior = foto mais nítida, porém mais pesada
+  // para guardar e mais lenta para sincronizar.
+  FOTO_MAX_PX: 1000,
+
+  // A qualidade da foto depois de reduzida, de 0 a 1.
+  // 0.7 é um bom meio-termo. Perto de 1 = quase sem perda, arquivo
+  // grande. Perto de 0.4 = arquivo pequeno, foto embaçada.
+  FOTO_QUALIDADE: 0.7,
+
+  // Quanto o app espera, em milésimos de segundo, antes de mandar as
+  // alterações para a nuvem (1200 = 1,2 segundo). Essa espera serve
+  // para juntar várias mudanças seguidas num envio só. Aumentar
+  // economiza internet; diminuir manda mais rápido.
+  PUSH_ESPERA_MS: 1200,
+
+  // De quantos em quantos dias o app lembra você de baixar o backup.
+  // Passado esse tempo sem baixar, o aviso do backup fica amarelo.
+  BACKUP_LEMBRETE_DIAS: 30,
+
+  // O corte, em por cento, que separa os dois tipos de cliente no
+  // selo de perfil. Se o cliente já abateu MENOS que esta porcentagem
+  // da dívida, ele é "Paga só o juro"; daí para cima é "Vai abatendo".
+  // Isso é só o rótulo na tela — não muda nenhuma conta.
+  PERFIL_CORTE_PCT: 5
+
+};
+
+// ============================================================
 // STATE
 // ============================================================
 var loans=[],clients=[],inadimplentes=[];
 var currentFilter='all',currentScreen='home';
-var expandedGroups={},expandedCards={},expandedClientHistory={},deleteConfirm=null,payingLoan=null;
+var expandedGroups={},expandedCards={},expandedClientHistory={},deleteConfirm=null;
 var appUnlocked=false,pinBuffer='',pinMode='check',pinNewTemp='';
 var _searchQuery='';
 var PIN_KEY='emp_pin_v3';
 var formData={};
 
 // ============================================================
-// NUVEM (Supabase) — configuração
+// NUVEM (Supabase) — endereço e chave
 // ============================================================
+// ISTO NÃO É CONFIGURAÇÃO DE REGRA e por isso ficou FORA do bloco
+// CONFIG lá em cima. É o endereço e a chave da nuvem onde os dados
+// são guardados — quem mexe aqui é quem cuida do servidor, não o
+// dono do negócio. Trocar estes dois valores por engano desliga a
+// sincronização.
 var SUPA_URL='https://dqauszhnkswgabkpbznf.supabase.co';
 var SUPA_KEY='sb_publishable_EUqGfUca6mmNCPoBRRo5YQ_eClBC7NG';
 var sb=null, cloudOn=false, cloudUser=null, cloudEmail='', _pushTimer=null;
@@ -522,6 +609,13 @@ try{
 // save(touched): "touched" e o(s) id(s) mexido(s) agora. Se nao vier nada,
 // marca tudo como pendente (conservador: em caso de duvida, o aparelho manda).
 function save(touched){
+  // D2 — REDE DE SEGURANCA. A partir de agora o envio para a nuvem manda SO as
+  // linhas marcadas como pendentes. Entao "chamar save sem dizer o que mudou"
+  // deixou de ser inofensivo: seria dado que nunca sobe. Quando nao vem
+  // argumento nenhum, tratamos como "marcar tudo" — enviar demais custa rede,
+  // enviar de menos custa dinheiro. save(null) continua significando
+  // "nada mudou de fato" para quem escreveu isso de proposito.
+  if(arguments.length===0)touched='*';
   _ledgerInvalidate();                 // qualquer gravacao invalida o razao em cache
   var cliTocados=[];
   loans.forEach(function(l){var id=upsertClient(l);if(id)cliTocados.push(id);});
@@ -536,9 +630,13 @@ function _saveLocal(){
   try{
     localStorage.setItem('emp_loans_v3',JSON.stringify(loans));
     localStorage.setItem('emp_clients_v3',JSON.stringify(clients));
+    _marcarGravacaoOk('emp_loans_v3');   // D8 — esta chave gravou de novo
   }catch(e){
-    showToast('⚠️ Armazenamento do aparelho cheio (os dados na nuvem seguem salvos).','error');
+    // D8 — o texto antigo dizia "os dados na nuvem seguem salvos", o que e
+    // mentira quando o app esta offline ou fora da conta: nesse caso o
+    // lancamento some ao fechar o app. Agora acende o mesmo aviso fixo do resto.
     if(typeof console!=='undefined')console.error('Falha ao salvar local:',e);
+    _marcarGravacaoFalhou('emp_loans_v3');
   }
 }
 function load(){
@@ -559,14 +657,18 @@ function migrateLoans(arr){
   });
 }
 function saveInad(touched){
+  if(arguments.length===0)touched='*';  // D2 — mesma rede de seguranca do save()
   _ledgerInvalidate();                 // idem para inadimplentes
   markDirty('inadimplentes',_idList(touched,inadimplentes));
   _saveInadLocal();
   cloudQueue();
 }
 function _saveInadLocal(){
-  try{localStorage.setItem('emp_inad_v1',JSON.stringify(inadimplentes));}
-  catch(e){showToast('⚠️ Nao foi possivel salvar inadimplentes no aparelho.','error');}
+  try{localStorage.setItem('emp_inad_v1',JSON.stringify(inadimplentes));_marcarGravacaoOk('emp_inad_v1');}
+  catch(e){
+    if(typeof console!=='undefined')console.error('Falha ao salvar inadimplentes:',e);
+    _marcarGravacaoFalhou('emp_inad_v1');   // D8 — mesmo aviso fixo, nada falha calado
+  }
 }
 // Devolve o id do cliente criado ou alterado — nulo quando nada mudou.
 // Serve para marcar sujo so quem mexeu, em vez da lista inteira.
@@ -590,7 +692,55 @@ function upsertClient(l){
 var DIRTY_KEY='emp_dirty_v1', TOMB_KEY='emp_tombstones_v1', TOMB_MAX_DAYS=90;
 var SYNC_TABLES=['emprestimos','clientes','inadimplentes'];
 function _lsGet(k,def){try{var v=JSON.parse(localStorage.getItem(k)||'null');return (v==null)?def:v;}catch(e){return def;}}
-function _lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+// D8 — _lsSet grava a FILA DE PENDENCIAS e a lista de EXCLUSOES. Se ela falhar
+// calada (era um catch vazio), o lancamento fica na tela, o app diz "salvo", a
+// marca de pendente nao e guardada e aquele lancamento NUNCA sobe para a nuvem.
+// Agora: toast de erro na hora + aviso fixo no alto da tela, que so apaga
+// quando uma gravacao voltar a dar certo.
+// O aviso e por CHAVE: gravar a lista de emprestimos com sucesso nao pode
+// apagar o aviso de que a FILA DE PENDENCIAS falhou. Enquanto sobrar uma chave
+// na lista de falhas, o aviso continua na tela.
+var _gravacaoFalhas={};
+function _gravacaoTemFalha(){
+  for(var k in _gravacaoFalhas){if(_gravacaoFalhas[k])return true;}
+  return false;
+}
+function _pintarAvisoGravacao(){
+  if(typeof document==='undefined')return;
+  var el=document.getElementById('aviso-gravacao');
+  if(!el)return;
+  if(_gravacaoTemFalha()){
+    el.textContent='⚠️ A gravação falhou — faça um backup agora e libere espaço no aparelho. Enquanto isso, lançamentos novos podem não ser guardados nem subir para a nuvem.';
+    el.style.display='block';
+  }else{
+    el.textContent='';
+    el.style.display='none';
+  }
+}
+function _marcarGravacaoFalhou(chave){
+  var novo=!_gravacaoTemFalha();
+  _gravacaoFalhas[chave||'?']=true;
+  _pintarAvisoGravacao();
+  // O toast so aparece na primeira falha da sequencia, para nao virar enxurrada.
+  if(novo&&typeof showToast==='function')showToast('⚠️ A gravação falhou — faça um backup agora e libere espaço.','error');
+}
+function _marcarGravacaoOk(chave){
+  var k=chave||'?';
+  if(!_gravacaoFalhas[k])return;
+  delete _gravacaoFalhas[k];
+  _pintarAvisoGravacao();
+}
+function _lsSet(k,v){
+  try{
+    localStorage.setItem(k,JSON.stringify(v));
+    _marcarGravacaoOk(k);          // gravou: esta chave sai da lista de falhas
+    return true;
+  }catch(e){
+    if(typeof console!=='undefined'&&console.error)console.error('Falha ao gravar '+k,e);
+    _marcarGravacaoFalhou(k);
+    return false;
+  }
+}
 // Normaliza o argumento "touched": undefined => todos os ids do array
 function _idList(touched,arr){
   // null  => nada mudou de fato (nao marca nada como sujo)
@@ -659,7 +809,9 @@ function isTomb(table,id){return tombIds(table).indexOf(id)>=0;}
 function pendingCount(){
   var o=_dirtyAll(),n=0;
   SYNC_TABLES.forEach(function(t){n+=o[t].length;});
-  return n+tombstones().length;
+  // D5 — as fotos que ainda nao subiram entram na MESMA conta, para aparecerem
+  // no mesmo aviso da tela. Foto que so existe no aparelho tambem e dado em risco.
+  return n+tombstones().length+(typeof pendingDocsCount==='function'?pendingDocsCount():0);
 }
 
 // ============================================================
@@ -696,11 +848,18 @@ function rowToInad(r){return {
   motivo:r.motivo||'',movidoEm:r.movido_em||'',lastAccrual:r.last_accrual||'',history:r.history||[]
 };}
 
+// D9 — TRAVA DOS PRIMEIROS SEGUNDOS.
+// initApp mostra a tela com o dado do aparelho e busca a nuvem em paralelo. Um
+// lancamento feito nesses dois segundos disparava um envio do estado ANTERIOR a
+// fusao. Enquanto a busca estiver rodando, o envio automatico fica segurado e e
+// solto assim que a fusao terminar.
+var _pullEmAndamento=false, _pushAdiado=false;
 // Agenda um envio para a nuvem (espera 1,2s para juntar várias mudanças)
 function cloudQueue(){
   if(!cloudOn||!cloudUser)return;
+  if(_pullEmAndamento){_pushAdiado=true;return;}   // D9 — espera a fusao terminar
   if(_pushTimer)clearTimeout(_pushTimer);
-  _pushTimer=setTimeout(function(){cloudPush();},1200);
+  _pushTimer=setTimeout(function(){cloudPush();},CONFIG.PUSH_ESPERA_MS);
 }
 // Envia o estado atual para a nuvem: grava/atualiza tudo e apaga SOMENTE o que
 // o usuario apagou de fato (lista de tombstones). Nunca apaga "o que nao esta na lista".
@@ -710,7 +869,8 @@ function cloudPush(){
   var jobs=[
     _pushTable('emprestimos', loans.map(loanToRow), loans.map(function(l){return l.id;})),
     _pushTable('clientes', clients.map(clientToRow), clients.map(function(c){return c.id;})),
-    _pushTable('inadimplentes', inadimplentes.map(inadToRow), inadimplentes.map(function(i){return i.id;}))
+    _pushTable('inadimplentes', inadimplentes.map(inadToRow), inadimplentes.map(function(i){return i.id;})),
+    pushDocsPendentes()   // D5 — toda subida de dado tenta levar junto as fotos pendentes
   ];
   return Promise.all(jobs).then(function(){setSync('Tudo salvo na nuvem ✓',true);})
     .catch(function(e){if(console)console.error('cloudPush',e);setSync('Sem conexão — salvo só no aparelho',true);});
@@ -719,7 +879,12 @@ function _pushTable(table, rows, ids){
   // fotografia dos pendentes ANTES do envio: o que o usuario mexer durante o
   // envio continua marcado como pendente e sobe no proximo push.
   var pend = dirtyIds(table);
-  var p = rows.length ? sb.from(table).upsert(rows,{onConflict:'id'}) : Promise.resolve({error:null});
+  // D2 — SO SOBE O QUE MUDOU NESTE APARELHO.
+  // Antes daqui saia a lista INTEIRA em upsert. Um celular com a tela
+  // desatualizada reescrevia na nuvem o que o outro aparelho tinha acabado de
+  // lancar. Agora vao so as linhas cujo id esta na fila de pendentes.
+  var enviar = rows.filter(function(r){return r&&r.id&&pend.indexOf(r.id)>=0;});
+  var p = enviar.length ? sb.from(table).upsert(enviar,{onConflict:'id'}) : Promise.resolve({error:null});
   return Promise.resolve(p).then(function(res){
     if(res&&res.error)throw res.error;
     // so limpa a marca de pendente do que realmente foi enviado e aceito
@@ -759,8 +924,9 @@ function _mergeTable(table,cloudArr,localArr){
 // Se a nuvem estiver vazia e o aparelho tiver dados, envia os do aparelho (primeira vez).
 function cloudPull(){
   if(!cloudOn||!cloudUser)return Promise.resolve();
-  setSync('Baixando da nuvem…');
-  return Promise.all([
+  _pullEmAndamento=true;                       // D9 — segura o envio automatico
+  setSync('Atualizando…');
+  var ciclo=Promise.all([
     sb.from('emprestimos').select('*'),
     sb.from('clientes').select('*'),
     sb.from('inadimplentes').select('*')
@@ -770,7 +936,13 @@ function cloudPull(){
     var cloudEmpty=(cl.length+cc.length+ci.length)===0;
     var localHas=(loans.length+clients.length+inadimplentes.length)>0;
     if(cloudEmpty&&localHas){
-      // Primeira vez: semeia a nuvem com o que já existe no aparelho
+      // Primeira vez: semeia a nuvem com o que já existe no aparelho.
+      // D2 — como o envio agora manda SO o que esta marcado como pendente, aqui
+      // e obrigatorio marcar TUDO antes de chamar o envio. Sem esta linha, um
+      // aparelho cheio de dados e sem pendencia semearia a nuvem com nada.
+      markDirty('emprestimos',loans.map(function(l){return l.id;}));
+      markDirty('clientes',clients.map(function(c){return c.id;}));
+      markDirty('inadimplentes',(inadimplentes||[]).map(function(i){return i.id;}));
       return cloudPush().then(function(){migrateDocsToCloud();setSync('Dados enviados para a nuvem ✓',true);});
     }
     loans=_mergeTable('emprestimos',cl.map(rowToLoan),loans);
@@ -791,6 +963,12 @@ function cloudPull(){
     if(console)console.error('cloudPull',e);
     setSync('Sem conexão — usando dados do aparelho',true);
   });
+  // D9 — a trava so cai quando TODO o ciclo (buscar, fundir e, se preciso,
+  // enviar) terminar. Se alguem salvou nesse meio-tempo, o envio adiado sai agora.
+  return ciclo.then(function(){
+    _pullEmAndamento=false;
+    if(_pushAdiado){_pushAdiado=false;cloudQueue();}
+  });
 }
 function setSync(msg,fade){
   var el=document.getElementById('sync-status'); if(!el)return;
@@ -800,8 +978,90 @@ function setSync(msg,fade){
     txt=msg+' · '+p+' lançamento'+(p>1?'s':'')+' aguardando internet';
     fade=false;
   }
+  if(_pullEmAndamento)fade=false;   // D9 — indicador discreto fica enquanto atualiza
   el.textContent=txt; el.style.opacity='1';
   if(fade)setTimeout(function(){if(el)el.style.opacity='0';},2500);
+}
+
+// ============================================================
+// D3 — RESSINCRONIZAR QUANDO A INTERNET VOLTA
+// ============================================================
+// Antes nao existia nada: nem evento 'online', nem aba voltando a ficar
+// visivel, nem nova tentativa. E, pior, se o app fosse aberto em modo aviao o
+// cloudUser ficava nulo e NADA subia ate fechar e reabrir o app, mesmo com a
+// internet de volta. Esta e a funcao unica que resolve os tres casos.
+var _ressincOcupado=false, _ultimaRessinc=0, _ressincTimer=null;
+var RESSINC_ESPERA=8000;        // minimo entre duas execucoes (evita rajada)
+var RESSINC_PERIODO=180000;     // 3 minutos, so enquanto houver pendencia
+
+// (1) Refaz o reconhecimento da sessao quando ela nao foi obtida na abertura.
+function _garantirSessao(){
+  if(!cloudOn||!sb||!sb.auth)return Promise.resolve(null);
+  if(cloudUser)return Promise.resolve(cloudUser);
+  return Promise.resolve(sb.auth.getSession()).then(function(res){
+    var sess=res&&res.data&&res.data.session;
+    if(sess&&sess.user){
+      cloudUser=sess.user.id;
+      cloudEmail=sess.user.email||'';
+      if(typeof pintarMenuNuvem==='function')pintarMenuNuvem();
+      if(typeof renderConta==='function'&&document.getElementById('conta-content'))renderConta();
+    }
+    return cloudUser;
+  }).catch(function(){return null;});
+}
+// (1) sessao, (2) busca da nuvem, (3) se sobrou pendencia, envia.
+function ressincronizar(){
+  if(!cloudOn)return Promise.resolve();
+  if(_ressincOcupado)return Promise.resolve();          // ja tem uma rodando
+  if(typeof navigator!=='undefined'&&navigator.onLine===false)return Promise.resolve();
+  var espera=RESSINC_ESPERA-(Date.now()-_ultimaRessinc);
+  if(espera>0){
+    // Rajada (o celular costuma disparar 'online' e 'aba visivel' juntos):
+    // junta tudo numa execucao so, um pouco depois, em vez de varias seguidas.
+    if(!_ressincTimer&&typeof setTimeout!=='undefined'){
+      _ressincTimer=setTimeout(function(){_ressincTimer=null;ressincronizar();},espera);
+    }
+    return Promise.resolve();
+  }
+  _ressincOcupado=true;_ultimaRessinc=Date.now();
+  return _garantirSessao().then(function(){
+    if(!cloudUser)return null;                          // ainda sem login: nada a fazer
+    return cloudPull().then(function(){
+      // cloudPull ja envia quando sobra pendencia, mas se ele caiu no erro de
+      // rede o envio nao aconteceu: tenta aqui tambem. Enviar duas vezes nao
+      // estraga nada (e upsert); nao enviar, sim.
+      if(pendingCount()>0)return cloudPush();
+      return null;
+    });
+  }).catch(function(e){
+    if(typeof console!=='undefined'&&console.warn)console.warn('ressincronizar',e&&e.message);
+  }).then(function(){_ressincOcupado=false;});
+}
+// Gatilhos: internet de volta, aba voltando a ficar visivel, e de 3 em 3
+// minutos enquanto houver algo esperando para subir.
+function _ligarGatilhosRessinc(){
+  if(typeof window==='undefined'||!window.addEventListener)return;
+  window.addEventListener('online',function(){
+    if(!cloudOn){
+      // A biblioteca da nuvem nem chegou a carregar nesta abertura (o app subiu
+      // sem internet e sem a copia em cache). Daqui nao da para sincronizar:
+      // e preciso abrir o app de novo. Dizer isso e melhor do que ficar calado.
+      showToast('Internet de volta — feche e abra o app para sincronizar.','warn');
+      return;
+    }
+    setSync('Internet de volta — sincronizando…');
+    ressincronizar();
+  });
+  if(typeof document!=='undefined'&&document.addEventListener){
+    document.addEventListener('visibilitychange',function(){
+      if(!document.hidden)ressincronizar();
+    });
+  }
+  if(typeof setInterval!=='undefined'){
+    setInterval(function(){
+      if(pendingCount()>0)ressincronizar();
+    },RESSINC_PERIODO);
+  }
 }
 
 // ============================================================
@@ -874,7 +1134,10 @@ function _showApp(){
 // ============================================================
 // DOCUMENTOS — fotos na nuvem (Supabase Storage) + cache no aparelho
 // ============================================================
-// O loan guarda só uma "chave" (ex: doc_<id>_docRG). A imagem fica:
+// O loan guarda só a "chave" da foto (ex: doc_<id>_docRG) — e, quando o
+// documento tem mais de uma página, a LISTA de chaves em texto JSON. Quem
+// entende os dois formatos é docPaginas()/docGuardarPaginas(), logo abaixo.
+// A imagem em si fica:
 //  - na nuvem (bucket "docs"), para sincronizar entre aparelhos;
 //  - e em cache no IndexedDB, para abrir rápido e economizar tráfego.
 var _docDB=null, DOC_BUCKET='docs';
@@ -918,12 +1181,89 @@ function blobToDataUrl(b){return new Promise(function(res,rej){var r=new FileRea
 function docCloudPath(key){return cloudUser+'/'+key+'.jpg';}
 function docCloudAvailable(){return cloudOn&&cloudUser&&sb&&sb.storage;}
 
+// ------------------------------------------------------------
+// D5 — FILA DE FOTOS PENDENTES
+// ------------------------------------------------------------
+// A foto tirada sem internet ficava so no aparelho: o envio falhava em silencio
+// (era um console.warn) e docSet respondia como se tivesse dado certo. A rede de
+// seguranca (migrateDocsToCloud) rodava UMA VEZ na vida do aparelho por causa da
+// trava emp_docs_clouded_<user>, entao nunca mais tentava.
+// Agora: mesma ideia da fila de lancamentos.
+//  - emp_docs_dirty_v1 : chaves de foto que ainda nao subiram (tenta de novo sempre).
+//  - emp_docs_sent_v1  : marca POR FOTO de que ja subiu (no lugar da trava por aparelho).
+var DOCS_DIRTY_KEY='emp_docs_dirty_v1', DOCS_SENT_KEY='emp_docs_sent_v1';
+function docsDirty(){var a=_lsGet(DOCS_DIRTY_KEY,[]);return Array.isArray(a)?a:[];}
+function markDocDirty(key){
+  if(!key)return;
+  var a=docsDirty();
+  if(a.indexOf(key)<0){a.push(key);_lsSet(DOCS_DIRTY_KEY,a);}
+}
+function _docFilaTirar(key){
+  var a=docsDirty(),b=a.filter(function(k){return k!==key;});
+  if(b.length!==a.length)_lsSet(DOCS_DIRTY_KEY,b);
+}
+function _docMarcarEnviada(key){
+  _docFilaTirar(key);
+  var s=_lsGet(DOCS_SENT_KEY,[]);
+  if(!Array.isArray(s))s=[];
+  if(s.indexOf(key)<0){s.push(key);_lsSet(DOCS_SENT_KEY,s);}
+}
+function _docDesmarcarEnviada(key){
+  var s=_lsGet(DOCS_SENT_KEY,[]);
+  if(!Array.isArray(s))s=[];
+  var b=s.filter(function(k){return k!==key;});
+  if(b.length!==s.length)_lsSet(DOCS_SENT_KEY,b);
+}
+// Quantas fotos ainda nao chegaram na nuvem (entra no mesmo aviso da tela)
+function pendingDocsCount(){return docsDirty().length;}
+// Tenta subir a fila. Vai em lotes para nao afogar a rede do celular; o que
+// sobrar tenta de novo no proximo envio ou na ressincronizacao.
+var DOCS_LOTE=15, _docsSubindo=false;
+function pushDocsPendentes(){
+  if(!docCloudAvailable())return Promise.resolve(0);
+  if(_docsSubindo)return Promise.resolve(0);   // ja tem um envio de fotos rodando
+  var fila=docsDirty();
+  if(!fila.length)return Promise.resolve(0);
+  _docsSubindo=true;
+  var lote=fila.slice(0,DOCS_LOTE),subiram=0;
+  return Promise.all(lote.map(function(k){
+    return _idbGet(k).then(function(durl){
+      if(!durl){
+        // A foto nao existe neste aparelho: daqui nao ha o que enviar. Tirar da
+        // fila evita uma pendencia eterna que nunca teria como ser resolvida.
+        _docFilaTirar(k);
+        return null;
+      }
+      return Promise.resolve(sb.storage.from(DOC_BUCKET).upload(docCloudPath(k),dataUrlToBlob(durl),{upsert:true,contentType:'image/jpeg'}))
+        .then(function(r){
+          if(r&&r.error)throw r.error;
+          _docMarcarEnviada(k);subiram++;
+        });
+    }).catch(function(e){
+      // Falhou: a chave FICA na fila e tenta de novo depois. Nunca some calada.
+      if(typeof console!=='undefined'&&console.warn)console.warn('foto pendente',k,e&&e.message);
+    });
+  })).then(function(){
+    _docsSubindo=false;
+    if(subiram&&typeof pintarMenuNuvem==='function')pintarMenuNuvem();
+    return subiram;
+  }).catch(function(){_docsSubindo=false;return 0;});
+}
+
 // --- API pública: grava, lê e apaga (coordena nuvem + cache) ---
 function docSet(key,dataUrl){
   return _idbSet(key,dataUrl).then(function(){
+    // D5 — entra na fila ANTES de tentar subir. Se o envio falhar (sem internet,
+    // sem login, erro do servidor), a foto continua marcada como pendente e o
+    // app tenta de novo sozinho. So sai da fila quando a nuvem confirmar.
+    markDocDirty(key);
+    _docDesmarcarEnviada(key);   // foto trocada: a marca de "ja subiu" nao vale mais
     if(docCloudAvailable()){
       try{ sb.storage.from(DOC_BUCKET).upload(docCloudPath(key),dataUrlToBlob(dataUrl),{upsert:true,contentType:'image/jpeg'})
-        .then(function(r){if(r&&r.error&&console)console.warn('upload foto',r.error.message);}); }catch(e){}
+        .then(function(r){
+          if(r&&r.error){if(typeof console!=='undefined'&&console.warn)console.warn('upload foto',r.error.message);return;}
+          _docMarcarEnviada(key);
+        }).catch(function(){}); }catch(e){}
     }
     return key;
   });
@@ -942,38 +1282,131 @@ function docGet(key){
 function docDel(key){
   if(!key)return Promise.resolve();
   if(docCloudAvailable()){try{sb.storage.from(DOC_BUCKET).remove([docCloudPath(key)]);}catch(e){}}
+  _docFilaTirar(key);_docDesmarcarEnviada(key);  // D5 — apagada: sai da fila e das marcas
   return _idbDel(key);
 }
 function isDataUrl(v){return typeof v==='string'&&v.indexOf('data:')===0;}
+
+// ------------------------------------------------------------
+// PÁGINAS DE UM DOCUMENTO — RG com frente e verso, comprovante com 2 folhas…
+// ------------------------------------------------------------
+// COMO O CAMPO É GRAVADO (regra fechada; não mude sem falar com o dono):
+//   nenhuma página  -> ''                        (igual ao app antigo)
+//   1 página        -> a chave, string simples   (IGUAL ao app antigo)
+//   2 ou mais       -> texto JSON: ["chave1","chave2"]
+// POR QUE a página única continua no formato antigo: o dono guarda a versão
+// anterior do app e sabe voltar atrás. Enquanto o caso comum (uma foto só)
+// ficar do jeito de sempre, voltar atrás continua funcionando sem perder foto.
+//
+// REGRA DE LEITURA: NUNCA leia loan.docRG direto para mostrar na tela.
+// Passe SEMPRE por docPaginas() — ela entende os três formatos acima e também
+// o formato mais antigo de todos: a data URL gravada dentro do próprio registro.
+function docPaginas(valor){
+  if(!valor)return [];                            // vazio, nulo ou indefinido
+  if(Array.isArray(valor))return valor.slice();   // já veio lista (uso interno)
+  if(typeof valor!=='string')return [];
+  if(valor.charAt(0)==='['){                      // tem cara de lista JSON
+    try{
+      var a=JSON.parse(valor);
+      if(Array.isArray(a))return a.filter(function(k){return typeof k==='string'&&k;});
+    }catch(e){ /* JSON quebrado: não perde nada, trata como página única */ }
+  }
+  return [valor];                                 // chave antiga OU data URL antiga
+}
+// Devolve o TEXTO que vai ser gravado no campo, seguindo a regra das três
+// situações acima. Use SEMPRE esta função para gravar: é ela que garante que
+// um documento de uma página só volte ao formato do app antigo.
+function docGuardarPaginas(lista){
+  if(!lista||!lista.length)return '';
+  var limpa=[];
+  for(var i=0;i<lista.length;i++){
+    var k=lista[i];
+    if(typeof k==='string'&&k&&limpa.indexOf(k)<0)limpa.push(k);
+  }
+  if(!limpa.length)return '';
+  if(limpa.length===1)return limpa[0];            // string simples, como sempre foi
+  return JSON.stringify(limpa);
+}
+// Chave de uma PÁGINA NOVA: doc_<id do registro>_<campo>_<sorteio>.
+// O sorteio (uid) impede que uma página nova pise na chave de uma página que
+// já existe — inclusive na chave antiga doc_<id>_<campo>, que fica intacta.
+function docNovaChave(regId,campo){return 'doc_'+regId+'_'+campo+'_'+uid();}
+// Algum registro ainda aponta para esta foto? É a trava antes de apagar de
+// verdade: foto que ainda está em uso em algum lugar NUNCA é apagada.
+function _docChaveEmUso(chave){
+  if(!chave)return false;
+  var achou=false;
+  loans.concat(inadimplentes||[]).forEach(function(o){
+    if(!o)return;
+    ['docRG','docResidencia'].forEach(function(f){
+      if(docPaginas(o[f]).indexOf(chave)>=0)achou=true;
+    });
+  });
+  return achou;
+}
+// Apaga a imagem de vez (aparelho + nuvem) SÓ se nenhum registro usar mais.
+// Todo caminho de "apagar de vez" passa por aqui, nunca por docDel direto.
+function _docApagarSeOrfa(chave){
+  if(!chave||isDataUrl(chave))return Promise.resolve();
+  if(_docChaveEmUso(chave))return Promise.resolve();
+  return docDel(chave);
+}
+// Apaga de vez TODAS as páginas dos dois documentos de um registro.
+function _docApagarPaginasDoRegistro(reg){
+  if(!reg)return Promise.resolve();
+  var todas=[];
+  ['docRG','docResidencia'].forEach(function(f){
+    docPaginas(reg[f]).forEach(function(k){todas.push(k);});
+  });
+  return Promise.all(todas.map(function(k){
+    return _docApagarSeOrfa(k).catch(function(){});
+  }));
+}
+
 // Migra fotos antigas em base64 (gravadas no próprio registro) para o cache/nuvem.
 function migrateDocsToIDB(){
   if(!window.indexedDB)return;
   var pending=[],tocadosDocs=[];
   loans.forEach(function(l){
     ['docRG','docResidencia'].forEach(function(f){
-      if(isDataUrl(l[f])){
-        var key='doc_'+l.id+'_'+f;var data=l[f];
-        l[f]=key;if(tocadosDocs.indexOf(l.id)<0)tocadosDocs.push(l.id);pending.push(docSet(key,data));
+      var pags=docPaginas(l[f]);
+      if(!pags.length)return;
+      var novas=[],mudou=false;
+      pags.forEach(function(p,i){
+        if(isDataUrl(p)){
+          // A PRIMEIRA página de um registro antigo mantém a chave de sempre
+          // (doc_<id>_<campo>). Só as seguintes ganham chave nova.
+          var key=(i===0)?('doc_'+l.id+'_'+f):docNovaChave(l.id,f);
+          novas.push(key);pending.push(docSet(key,p));mudou=true;
+        }else novas.push(p);
+      });
+      if(mudou){
+        l[f]=docGuardarPaginas(novas);
+        if(tocadosDocs.indexOf(l.id)<0)tocadosDocs.push(l.id);
       }
     });
   });
   if(pending.length)Promise.all(pending).then(function(){save(tocadosDocs);}).catch(function(){});
 }
-// Sobe para a nuvem as fotos que hoje só existem no aparelho (executa uma vez por aparelho).
+// Sobe para a nuvem as fotos que hoje só existem no aparelho.
+// D5 — antes tinha uma trava (emp_docs_clouded_<user>) que fazia isto rodar UMA
+// VEZ na vida do aparelho: a foto tirada offline depois disso nunca mais era
+// tentada. A trava por aparelho virou marca POR FOTO (emp_docs_sent_v1): toda
+// foto referenciada que ainda nao foi confirmada na nuvem entra na fila e e
+// tentada de novo a cada envio e a cada ressincronizacao.
 function migrateDocsToCloud(){
-  if(!docCloudAvailable())return;
-  if(localStorage.getItem('emp_docs_clouded_'+cloudUser))return;
-  var refs=[];
+  if(!docCloudAvailable())return Promise.resolve(0);
+  var enviadas=_lsGet(DOCS_SENT_KEY,[]);
+  if(!Array.isArray(enviadas))enviadas=[];
   loans.concat(inadimplentes||[]).forEach(function(o){
-    ['docRG','docResidencia'].forEach(function(f){if(o[f]&&!isDataUrl(o[f]))refs.push(o[f]);});
-  });
-  if(!refs.length){localStorage.setItem('emp_docs_clouded_'+cloudUser,'1');return;}
-  Promise.all(refs.map(function(k){
-    return _idbGet(k).then(function(durl){
-      if(!durl)return null;
-      return sb.storage.from(DOC_BUCKET).upload(docCloudPath(k),dataUrlToBlob(durl),{upsert:true,contentType:'image/jpeg'}).catch(function(){});
+    ['docRG','docResidencia'].forEach(function(f){
+      // TODAS as páginas entram na fila, não só a primeira.
+      docPaginas(o[f]).forEach(function(k){
+        if(k&&!isDataUrl(k)&&enviadas.indexOf(k)<0)markDocDirty(k);
+      });
     });
-  })).then(function(){localStorage.setItem('emp_docs_clouded_'+cloudUser,'1');}).catch(function(){});
+  });
+  return pushDocsPendentes();
 }
 
 // ============================================================
@@ -1184,11 +1617,19 @@ function accrueParcelas(){
       while(daysUntil(p.dueDate)<0&&guard<600){
         var before=parseFloat(p.currentAmount)||0;
         var juros=parseFloat((before*(l.interest/100)).toFixed(2));
+        // C8 — DATA DA COMPETENCIA, NAO DE HOJE.
+        // Guardado ANTES de rolar o vencimento: e o mes que esta sendo rolado.
+        // Antes gravava today(), entao quem ficasse 3 meses sem abrir o app via as
+        // tres rolagens caindo todas no mesmo dia. Pior: um pagamento feito no meio
+        // desses meses ficava com data ANTERIOR ao juro que ele deveria pagar, e o
+        // razao o classificava como abatimento de capital em vez de juro.
+        // Formato YYYY-MM-DD, o mesmo de today() e de addDays() no resto do arquivo.
+        var venc=p.dueDate;
         p.currentAmount=parseFloat((before+juros).toFixed(2));
-        p.dueDate=addDays(p.dueDate,30);
+        p.dueDate=addDays(p.dueDate,CONFIG.CICLO_DIAS);
         l.history=l.history||[];
         // rate: congela a taxa usada AGORA, para o passado nao mudar se a taxa mudar
-        l.history.push({date:today(),type:'renovacao',value:before,rate:l.interest,note:'Parcela '+p.n+': juros '+l.interest+'%: +'+fmt(juros)+'. Novo saldo da parcela: '+fmt(p.currentAmount)});
+        l.history.push({date:venc,type:'renovacao',value:before,rate:l.interest,note:'Parcela '+p.n+': juros '+l.interest+'%: +'+fmt(juros)+'. Novo saldo da parcela: '+fmt(p.currentAmount)});
         changed=true;guard++;
         if(tocados.indexOf(l.id)<0)tocados.push(l.id);
       }
@@ -1382,6 +1823,8 @@ function _ledgerCalc(loan){
     if(!h)return;
     eventos.push({date:h.date||'',type:h.type||'',value:parseFloat(h.value)||0,
       note:h.note||h.description||'',rate:h.rate,atual:false,
+      // capital: usado só pelo ramo 'ajuste' — é a diferença SEM o juro (ver C3).
+      capital:h.capital,
       pagamentoOriginal:h.pagamentoOriginal});
     // ESTORNO — leia com atenção, aqui mora uma armadilha.
     // estornoPagamento() APAGA o pagamento de loan.payments e grava só o rastro.
@@ -1485,8 +1928,26 @@ function _ledgerCalc(loan){
       // Correção de um lançamento errado (saveEdit). Coerente com o que o app já
       // faz: mexe no capital e no saldo, mas NÃO gera juro pendente novo —
       // não é dinheiro novo emprestado, é conserto de digitação.
-      capitalEmprestado=R(capitalEmprestado+V);
-      saldo=R(saldo+R(V*(1+r)));
+      //
+      // C3 — O VALOR GRAVADO JÁ VEM COM O JURO DENTRO.
+      // saveEdit grava value = diferença × (1 + taxa/100). Aplicar a taxa OUTRA
+      // VEZ aqui cobrava juro em cima de juro, e o extrato passava a mostrar um
+      // saldo maior que o do cartão. Agora o saldo anda exatamente o valor
+      // gravado — que é o mesmo que já foi somado ao currentAmount. Nada gravado
+      // muda: só a conta do extrato passa a bater com a do cartão.
+      //
+      // O CAPITAL é outra coisa: `value` é capital + juro, e capital emprestado
+      // é só a parte do capital. Lançamentos NOVOS gravam essa parte no campo
+      // `capital`. Os ANTIGOS não têm esse campo, então deduzimos
+      // V ÷ (1 + taxa/100) — a conta inversa EXATA da que gerou o valor, não é
+      // chute: se o valor saiu de dif×(1+taxa), dividir por (1+taxa) devolve dif.
+      // Esta derivação existe SÓ por causa dos lançamentos antigos; no dia em que
+      // não houver mais nenhum sem o campo `capital`, ela pode sair daqui.
+      var capAj=(e.capital!=null&&e.capital!=='')
+        ? R(parseFloat(e.capital)||0)
+        : R(V/(1+r));
+      capitalEmprestado=R(capitalEmprestado+capAj);
+      saldo=R(saldo+V);
       linha.rotulo='Ajuste';linha.sinal='';
     }else{
       // Tipo desconhecido: não mexe em nada, mas aparece no extrato para não
@@ -1549,8 +2010,11 @@ function _receivedBefore(loan,before){
   return h+p;
 }
 // Capital de fato emprestado num período: soma empréstimos e adições (dinheiro que saiu). NÃO conta renovação.
-function capitalNoPeriodo(start,end){
-  return allRecords().reduce(function(s,l){
+// C9 — o 3o argumento (opcional) limita a conta a uma lista de registros, para o
+// relatorio poder somar so o que passou pelos filtros da tela. Sem ele a funcao
+// continua se comportando como antes: a carteira inteira.
+function capitalNoPeriodo(start,end,lista){
+  return (lista||allRecords()).reduce(function(s,l){
     return s+(l.history||[]).reduce(function(a,h){
       return (h.type==='emprestimo'&&(!start||h.date>=start)&&(!end||h.date<end))?a+(h.value||0):a;
     },0);
@@ -1645,11 +2109,11 @@ function clientPerfil(key){
   var pct=cap>0?(abat/cap):0;
   var r={capital:cap,abatido:abat,renovacoes:renov,naRua:naRua,jurosMes:jurosMes,
     tipo:'novo',rotulo:'',frase:''};
-  if(renov>=2&&pct<0.05){
+  if(renov>=2&&pct<(CONFIG.PERFIL_CORTE_PCT/100)){
     r.tipo='so_juro';r.rotulo='Paga só o juro';
     r.frase='Renovou '+renov+' vez'+(renov>1?'es':'')+' sem abater a dívida. Rende '
       +fmt(jurosMes)+' por mês, mas os '+fmt(naRua)+' seguem na rua.';
-  }else if(pct>=0.05&&renov>=1){
+  }else if(pct>=(CONFIG.PERFIL_CORTE_PCT/100)&&renov>=1){
     r.tipo='amortiza';r.rotulo='Vai abatendo';
     r.frase='Já abateu '+fmt(abat)+' da dívida. O juro do mês vai caindo junto.';
   }
@@ -1753,7 +2217,11 @@ function inRange(ds,from,to){if(!ds)return false;if(from&&ds<from)return false;i
 function loanActiveInRange(l,from,to){if(!from&&!to)return true;if(inRange(l.startDate,from,to))return true;if((l.history||[]).some(function(h){return inRange(h.date,from,to);}))return true;return(l.payments||[]).some(function(p){return inRange(p.date,from,to);});}
 function clientEvents(ls,from,to){var ev=[];ls.forEach(function(l){(l.history||[]).forEach(function(h){var t=h.type||'';var kind=(t.indexOf('emprest')>=0)?'borrow':(t.indexOf('pagamento')>=0||t==='pay')?'pay':(t.indexOf('renov')>=0||t==='renew')?'renew':'other';if((!from&&!to)||inRange(h.date,from,to))ev.push({date:h.date,kind:kind,value:h.value||0});});(l.payments||[]).forEach(function(p){if((!from&&!to)||inRange(p.date,from,to))ev.push({date:p.date,kind:'pay',value:p.value||0});});});ev.sort(function(a,b){return new Date(b.date+'T00:00:00')-new Date(a.date+'T00:00:00');});return ev;}
 // Juros composto automatico dos inadimplentes: a cada mes vencido, rola +30 dias e acumula juros sobre o saldo
-function accrueInadimplentes(){var changed=false,tocados=[];(inadimplentes||[]).forEach(function(i){if(i.interest==null||!i.dueDate)return;var guard=0;while(daysUntil(i.dueDate)<0&&guard<600){var before=parseFloat(i.currentAmount)||0;var juros=parseFloat((before*(i.interest/100)).toFixed(2));i.currentAmount=parseFloat((before+juros).toFixed(2));i.dueDate=addDays(i.dueDate,30);i.history=i.history||[];i.history.push({date:today(),type:'renovacao',value:before,rate:i.interest,note:'Juros de inadimplencia '+i.interest+'%: +'+fmt(juros)+'. Novo saldo: '+fmt(i.currentAmount)});i.lastAccrual=today();changed=true;if(tocados.indexOf(i.id)<0)tocados.push(i.id);guard++;}});if(changed)saveInad(tocados);return changed;}
+// C8 — a rolagem do juro do inadimplente e gravada na data da COMPETENCIA (o
+// vencimento que esta sendo rolado), nao em today(). Ver o comentario longo em
+// accrueParcelas: e a mesma regra e o mesmo motivo. `lastAccrual` continua sendo
+// today(), porque ele responde outra pergunta — "quando o app rodou esta conta".
+function accrueInadimplentes(){var changed=false,tocados=[];(inadimplentes||[]).forEach(function(i){if(i.interest==null||!i.dueDate)return;var guard=0;while(daysUntil(i.dueDate)<0&&guard<600){var before=parseFloat(i.currentAmount)||0;var juros=parseFloat((before*(i.interest/100)).toFixed(2));var venc=i.dueDate;i.currentAmount=parseFloat((before+juros).toFixed(2));i.dueDate=addDays(i.dueDate,CONFIG.CICLO_DIAS);i.history=i.history||[];i.history.push({date:venc,type:'renovacao',value:before,rate:i.interest,note:'Juros de inadimplencia '+i.interest+'%: +'+fmt(juros)+'. Novo saldo: '+fmt(i.currentAmount)});i.lastAccrual=today();changed=true;if(tocados.indexOf(i.id)<0)tocados.push(i.id);guard++;}});if(changed)saveInad(tocados);return changed;}
 // Link WhatsApp sem duplicar o DDI 55
 function waLink(phone){
   var p=(phone||'').replace(/\D/g,'');
@@ -1803,6 +2271,7 @@ function goScreen(name){
   if(typeof window!=='undefined'&&window.scrollTo)window.scrollTo(0,0);
   var cm=document.querySelector&&document.querySelector('.col-main');
   if(cm&&cm.scrollTo)cm.scrollTo(0,0);
+  _pintarMiniaturasDoc();   // trocar de tela também carrega as fotos que apareceram
 }
 // Cabeçalho: título da tela, botão de voltar só onde há para onde voltar.
 function pintarTopo(){
@@ -1864,38 +2333,12 @@ function renderAll(){
   if(currentScreen==='receber')renderReceber();
   if(currentScreen==='conta')renderConta();
   pintarMenuNuvem();
+  _pintarMiniaturasDoc();   // as miniaturas de documento desenhadas agora
 }
 
-function toggleGroup(key){
-  if(expandedGroups[key])delete expandedGroups[key];
-  else expandedGroups[key]=true;
-  renderAll();
-}
-function toggleCard(id){
-  if(expandedCards[id]){delete expandedCards[id];if(payingLoan===id)payingLoan=null;}
-  else expandedCards[id]=true;
-  renderAll();
-}
 function toggleClientHistory(key){
   if(expandedClientHistory[key])delete expandedClientHistory[key];
   else expandedClientHistory[key]=true;
-  renderAll();
-}
-function startPayLoan(id){
-  payingLoan=id;
-  renderAll();
-}
-function cancelPayLoan(){
-  payingLoan=null;
-  renderAll();
-}
-function confirmDelete(id){
-  deleteConfirm=id;
-  if(!expandedCards[id])expandedCards[id]=true;
-  renderAll();
-}
-function cancelDelete(){
-  deleteConfirm=null;
   renderAll();
 }
 function deleteLoan(id){
@@ -1906,44 +2349,18 @@ function deleteLoan(id){
     ok:'Excluir',perigo:true},function(){_deleteLoanExec(id);});
 }
 function _deleteLoanExec(id){
-  var l=loans.find(function(x){return x.id===id;});
-  if(l){if(!isDataUrl(l.docRG))docDel(l.docRG);if(!isDataUrl(l.docResidencia))docDel(l.docResidencia);}
+  // AS FOTOS NÃO SÃO APAGADAS AQUI, de propósito. O empréstimo acabou de ir
+  // para a lixeira de 30 dias (_redeAntesDeApagar). Se as fotos sumissem
+  // agora, quem trouxesse o empréstimo de volta receberia um registro sem
+  // documento nenhum — perda de dado que o dono não aceita.
+  // Quem apaga a foto de verdade é a lixeira: quando o prazo vence ou quando
+  // o dono manda "apagar de vez". Ver _lixeiraApagarFotos().
   loans=loans.filter(function(l){return l.id!==id;});
   addTombstone('emprestimos',id); // unica coisa que autoriza apagar na nuvem
   delete expandedCards[id];
   deleteConfirm=null;
   save([]);renderAll();   // [] de proposito: o id virou tombstone, nao pode ser marcado sujo
   showToast('🗑️ Empréstimo excluído');
-}
-
-function doInlinePay(id,bal){
-  var loan=loans.find(function(l){return l.id===id;});
-  if(!loan)return;
-  loan.history=loan.history||[];
-  // preserva os pagamentos parciais ja feitos neste periodo
-  (loan.payments||[]).forEach(function(p){loan.history.push({date:p.date,type:'pagamento_parcial',value:p.value,note:p.note||''});});
-  loan.history.push({type:'pagamento_final',date:today(),value:bal,description:'Pagamento total',note:'Dívida quitada'});
-  loan.paid=true;
-  loan.currentAmount=0;
-  loan.payments=[];
-  payingLoan=null;
-  delete expandedCards[id];
-  save(id);renderAll();
-  showToast('✅ '+fmt(bal)+' — quitado!');
-}
-function doInlinePayPartial(id){
-  var loan=loans.find(function(l){return l.id===id;});
-  if(!loan)return;
-  var inp=document.getElementById('partial-'+id);
-  var val=parseFloat((inp?inp.value:0)||0);
-  if(!val||val<=0){showToast('⚠️ Digite o valor parcial');return;}
-  var bal=getBalance(loan);
-  if(val>=bal){doInlinePay(id,bal);return;}
-  loan.payments=loan.payments||[];
-  loan.payments.push({id:'p'+Date.now(),date:today(),value:val,note:'Pagamento parcial'});
-  payingLoan=null;
-  save(id);renderAll();
-  showToast('✅ '+fmt(val)+' registrado · restam '+fmt(getBalance(loan)));
 }
 
 // A contagem de inadimplentes vive no chip do filtro (a aba própria acabou).
@@ -1967,9 +2384,49 @@ function accrueTudo(){
   var b=accrueParcelas();
   return a||b;
 }
+// ============================================================
+// D1 — SERVICE WORKER: O APP ABRE SEM INTERNET
+// ============================================================
+// O icone na tela do celular era so um atalho: sem sinal, o navegador tentava
+// buscar a pagina no servidor e falhava. Com o sw.js registrado, a propria
+// pagina fica guardada no aparelho e abre offline.
+// Duas protecoes obrigatorias:
+//  - try/catch em volta de tudo (navegador antigo sem suporte nao pode quebrar
+//    o app);
+//  - nao registrar em file:// — o navegador recusa e joga erro no console, e e
+//    exatamente assim que os testes locais e o uso pelo arquivo direto abrem
+//    este HTML.
+function registrarServiceWorker(){
+  try{
+    if(typeof navigator==='undefined'||!navigator.serviceWorker)return;
+    if(typeof location==='undefined'||location.protocol==='file:')return;
+    // Caminhos RELATIVOS: o app e publicado numa subpasta do GitHub Pages.
+    navigator.serviceWorker.register('./sw.js',{scope:'./'}).then(function(reg){
+      if(!reg||!reg.addEventListener)return;
+      reg.addEventListener('updatefound',function(){
+        var novo=reg.installing;
+        if(!novo||!novo.addEventListener)return;
+        novo.addEventListener('statechange',function(){
+          // 'installed' COM um worker ja no comando = versao nova pronta,
+          // esperando o app fechar. Sem controller e a primeira instalacao,
+          // e ai nao ha nada a avisar.
+          if(novo.state==='installed'&&navigator.serviceWorker.controller){
+            showToast('Nova versão disponível — feche e abra o app');
+          }
+        });
+      });
+    }).catch(function(e){
+      if(typeof console!=='undefined'&&console.warn)console.warn('service worker',e&&e.message);
+    });
+  }catch(e){
+    if(typeof console!=='undefined'&&console.warn)console.warn('service worker',e&&e.message);
+  }
+}
 function initApp(){
   load();                 // carrega o cache do aparelho (instantâneo)
   migrateDocsToIDB();
+  registrarServiceWorker();   // D1 — faz o app abrir sem internet
+  _ligarGatilhosRessinc();    // D3 — internet de volta / aba visivel / de 3 em 3 min
   if(!cloudOn){
     // biblioteca da nuvem não carregou: modo offline (só o aparelho)
     accrueTudo();         // sem nuvem, o cache é a única verdade que existe
@@ -2000,13 +2457,45 @@ function afterUnlock(){
   var s=calcStats();
   if(s.warn3>0)setTimeout(function(){showToast('⚠️ '+s.warn3+' vence(m) em até 3 dias!','warn');},600);
   checkBackupReminder();
+  // Liga a rede de segurança assim que o app abre de verdade (depois do login e
+  // do PIN): limpa o que venceu na lixeira, decide se faz a cópia do dia e
+  // deixa as listas prontas para a tela Conta. Roda uma vez por sessão.
+  _iniciarRedeSeguranca();
+}
+// D7 — O LEMBRETE DE BACKUP AGORA VALE TAMBEM PARA QUEM USA A NUVEM.
+// Existia aqui uma linha que desligava o lembrete quando havia nuvem ativa
+// ("a nuvem ja e o backup"). Isso e falso: a nuvem copia o erro junto. Se um
+// registro for apagado ou estragado por engano, a nuvem replica o estrago nos
+// dois aparelhos. Backup baixado e a unica copia que congela o passado.
+// O prazo do lembrete mora no bloco CONFIG, la em cima (BACKUP_LEMBRETE_DIAS).
+// Data do ultimo backup baixado/copiado. Devolve null quando nunca houve.
+function ultimoBackupMs(){
+  var v=null;
+  try{v=localStorage.getItem('emp_last_backup');}catch(e){v=null;}
+  if(!v)return null;
+  var n=parseInt(v,10);
+  return isNaN(n)?null:n;
+}
+function diasDesdeBackup(){
+  var ms=ultimoBackupMs();
+  if(ms==null)return null;
+  return Math.floor((Date.now()-ms)/86400000);
+}
+// Texto pronto para a tela Conta: "Último backup: 01/09/2026 — há 9 dias"
+function textoUltimoBackup(){
+  var ms=ultimoBackupMs();
+  if(ms==null)return 'Nenhum backup baixado ainda';
+  var d=new Date(ms);
+  var data=String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();
+  var dias=diasDesdeBackup();
+  var quando=dias<=0?'hoje':(dias===1?'há 1 dia':'há '+dias+' dias');
+  return 'Último backup: '+data+' — '+quando;
 }
 function checkBackupReminder(){
   if(!loans.length)return;
-  if(cloudOn&&cloudUser)return; // com nuvem ativa, o backup automático já é a nuvem
-  var last=localStorage.getItem('emp_last_backup');
-  var stale=!last||(Date.now()-parseInt(last,10))>7*86400000;
-  if(stale)setTimeout(function(){showToast('💾 Faça um backup dos seus dados (aba Segurança → Backup)','warn');},1600);
+  var dias=diasDesdeBackup();
+  var stale=(dias==null)||(dias>=CONFIG.BACKUP_LEMBRETE_DIAS);
+  if(stale)setTimeout(function(){showToast('💾 Faça um backup dos seus dados (aba Conta → Backup e restaurar)','warn');},1600);
 }
 // Bloqueio temporario apos varios erros seguidos (trava de forca bruta caseira)
 var PIN_MAX_FAILS=5, PIN_LOCK_MS=30000;
@@ -2152,50 +2641,41 @@ function pinWipe(){
   msg+=(pend>0)
     ? '⚠️ ATENÇÃO: '+pend+' lançamento'+(pend>1?'s':'')+' ainda NÃO subiram para a nuvem e serão PERDIDOS para sempre.'
     : 'Tudo que já subiu para a nuvem continua lá e volta quando você entrar de novo.';
+  msg+='\n\nAs cópias automáticas do app NÃO são apagadas por aqui — elas ficam guardadas '
+    +'e continuam disponíveis para restaurar depois.';
   pedirConfirmacao({titulo:'Apagar tudo deste aparelho?',texto:msg,ok:'Continuar',perigo:true},function(){
     pedirTexto({titulo:'Última confirmação',
       texto:'Digite APAGAR (em maiúsculas) para apagar este aparelho.',
       rotulo:'Confirmação',dica:'APAGAR',ok:'Apagar tudo',perigo:true},function(t){
       if(t!=='APAGAR'){showToast('Nada foi apagado.','warn');return;}
-      localStorage.clear();location.reload();
+      // Guarda uma cópia antes de limpar. A cópia mora no IndexedDB, que o
+      // localStorage.clear() nao apaga — entao ela sobrevive ao "apagar tudo".
+      _redeAntesDeOperacao('antes de apagar tudo deste aparelho',function(){
+        localStorage.clear();location.reload();
+      });
     });
   });
 }
-function openPinSettings(){
-  var logged=cloudOn&&cloudUser;
-  var statusEmoji='<span style="color:var(--ac);display:inline-flex">'+sv(I.cloud,30)+'</span>';
-  var statusTitle=logged?'Conectado à nuvem':(cloudOn?'Fora da conta':'Modo offline');
-  var statusSub=logged?('Sincronizando como '+esc(cloudEmail)):(cloudOn?'Entre para sincronizar':'Dados só neste aparelho');
-  modal('<div class="modal-header"><span class="modal-title">Conta</span><button class="modal-close" onclick="closeModal()">×</button></div>'
-    +'<div style="text-align:center;padding:12px 0"><div style="margin-bottom:6px;display:flex;justify-content:center">'+statusEmoji+'</div>'
-    +'<div style="font-size:13px;color:var(--tx);font-weight:600">'+statusTitle+'</div>'
-    +'<div style="font-size:11px;color:var(--dim);margin-top:2px">'+statusSub+'</div></div>'
-    +'<div style="display:flex;flex-direction:column;gap:7px">'
-    +(logged?'<button class="btn-primary" onclick="closeModal();cloudPull()">Sincronizar agora</button>':'')
-    +'<button class="btn-secondary" onclick="closeModal();openBackup()">Backup e restaurar</button>'
-    +(hasPin()
-      ?'<button class="btn-secondary" onclick="closeModal();showPinScreen(\'set\',\'\')">Alterar PIN</button>'
-        +'<button class="btn-secondary" onclick="closeModal();showPinScreen(\'remove\',\'\')">Remover PIN</button>'
-      :'<button class="btn-secondary" onclick="closeModal();showPinScreen(\'set\',\'\')">Criar PIN de acesso</button>')
-    +(logged?'<button class="btn-secondary" onclick="doLogout()">Sair da conta</button>':'')
-    +'</div>'
-    +'<div style="background:var(--pn2);border:0.5px solid var(--ln);border-radius:8px;padding:8px 10px;font-size:10px;color:var(--dim);margin-top:9px;line-height:1.55">'
-    +'<b>Sobre o PIN:</b> é uma trava simples contra quem pega o celular na mão — não é criptografia. Os dados continuam legíveis para quem tiver acesso técnico ao aparelho. A proteção de verdade é a senha da sua conta e o bloqueio de tela do celular.'
-    +'</div>'
-    +'<div style="background:var(--acS);border:0.5px solid var(--ln2);border-radius:8px;padding:8px 10px;font-size:10px;color:var(--ac);margin-top:7px">'
-    +(logged?'Seus dados e as fotos sincronizam automaticamente entre seus aparelhos. O backup continua disponível como segurança extra.':'O acesso é protegido por login. Sem conexão, o app usa os dados do aparelho.')
-    +'</div>');
-}
-
 // ============================================================
 // STATS
 // ============================================================
 function calcStats(){
   var active=loans.filter(function(l){return!l.paid;});
+  // C7 — QUEM ATRASOU NAO PODE CONTAR NUM INDICADOR E SUMIR DO OUTRO.
+  // "Em risco" ja somava ativos + inadimplentes, mas "A receber" e "Vencido"
+  // somavam so os ativos. Resultado: mover um cliente para inadimplente derrubava
+  // o "A receber" do dono sem nada ter sido pago. Agora os tres olham o MESMO
+  // conjunto — tudo que ainda esta em aberto.
+  var emAberto=active.concat(inadimplentes||[]);
   var now=new Date();var tm=now.getMonth();var ty=now.getFullYear();
-  var totalOwed=active.reduce(function(s,l){return s+getBalance(l);},0);
+  var totalOwed=emAberto.reduce(function(s,l){return s+getBalance(l);},0);
   var totalLent=active.reduce(function(s,l){return s+l.originalAmount;},0);
-  var totalOverdue=active.filter(function(l){return daysUntil(l.dueDate)<0;}).reduce(function(s,l){return s+getBalance(l);},0);
+  var totalOverdue=emAberto.filter(function(l){return daysUntil(l.dueDate)<0;}).reduce(function(s,l){return s+getBalance(l);},0);
+  // Quanto do "A receber" esta parado com inadimplente. Serve para a linha de
+  // aviso embaixo dos indicadores: sem ela o numero do dono muda do dia para a
+  // noite e ele nao sabe por que.
+  var inadAberto=_r2((inadimplentes||[]).reduce(function(s,i){return s+getBalance(i);},0));
+  var inadCount=(inadimplentes||[]).length;
   var warn3=active.filter(function(l){var d=daysUntil(l.dueDate);return d>=0&&d<=3;}).length;
   var clientCount=new Set(loans.map(function(l){return clientKey(l.name);})).size;
   function _p2(n){return String(n).padStart(2,'0');}
@@ -2217,7 +2697,7 @@ function calcStats(){
   // DINHEIRO EM RISCO: quanto do bolso dele ainda nao voltou. So conta o que
   // ainda esta em aberto — emprestimos ativos + inadimplentes. Emprestimo
   // quitado nao tem mais risco nenhum, esta fechado.
-  var emAberto=active.concat(inadimplentes||[]);
+  // emAberto ja foi montado la em cima (C7): ativos + inadimplentes.
   var emRisco=_r2(emAberto.reduce(function(s,l){return s+ledger(l).emRisco;},0));
   var capitalEmRisco=_r2(emAberto.reduce(function(s,l){return s+ledger(l).capitalEmprestado;},0));
   // Quanto do dinheiro que saiu do bolso já voltou, nos empréstimos ainda em aberto.
@@ -2225,6 +2705,7 @@ function calcStats(){
   var capitalRecuperado=_r2(emAberto.reduce(function(s,l){
     var g=ledger(l);return s+Math.min(g.recebidoTotal,g.capitalEmprestado);},0));
   return{totalOwed:totalOwed,totalLent:totalLent,totalOverdue:totalOverdue,warn3:warn3,
+    inadAberto:inadAberto,inadCount:inadCount,
     capitalRecuperado:capitalRecuperado,
     clientCount:clientCount,activeClientCount:activeClientCount,overdueCount:overdueCount,
     juros:juros,jurosYear:jurosYear,capitalYear:capitalYear,capitalMonth:capitalMonth,
@@ -2340,6 +2821,17 @@ function renderHome(){
     + tile('Em risco',dinK(s.emRisco),s.emRisco>0?'var(--am)':'var(--gr)',"goScreen('report')")
     +'</div>';
 
+  // C7 — LINHA DE AVISO DO INADIMPLENTE.
+  // "A receber" e "Vencido" agora incluem quem esta na lista de inadimplentes.
+  // Sem dizer isto em algum lugar, o dono ve um numero grande e nao entende de
+  // onde saiu (ou ve o numero cair quando alguem sai da lista). A linha e
+  // discreta, fica logo abaixo dos indicadores e some quando nao ha inadimplente.
+  if(s.inadAberto>0.009){
+    html+='<div style="font-size:11.5px;color:var(--dim2);padding:6px 16px 0;line-height:1.5">'
+      +'Inclui '+fmt(s.inadAberto)+' parados com '+s.inadCount
+      +(s.inadCount===1?' inadimplente.':' inadimplentes.')+'</div>';
+  }
+
   // O dinheiro do próprio bolso: quanto saiu, quanto já voltou, quanto ainda
   // pode virar prejuízo. Mesma leitura da ficha do cliente, agora da carteira toda.
   if(s.capitalEmRisco>0.009){
@@ -2415,7 +2907,6 @@ function filtrarClientes(f){
   currentFilter=f;
   goScreen('clients');
 }
-function verInadimplentes(){filtrarClientes('inad');}
 function setFilter(btn,f){
   currentFilter=f;
   renderLoanList(_searchQuery);
@@ -2545,6 +3036,95 @@ function renderCliente(){
   }
   box.innerHTML=fichaCabecalho(clienteAtual)+fichaCorpo(clienteAtual,{});
 }
+// ============================================================
+// T2 — BLOCO "DOCUMENTOS" DA FICHA DO CLIENTE
+// ============================================================
+// ONDE A PÁGINA NOVA É GRAVADA — a regra, escrita, para ninguém adivinhar:
+// o cliente pode ter VÁRIOS empréstimos e a foto fica guardada DENTRO do
+// empréstimo. A página nova vai para o registro MAIS RECENTE e ainda EM ABERTO
+// daquele cliente. Se não houver nenhum em aberto, vai para o mais recente que
+// existir. Se o cliente não tiver registro nenhum, não há onde gravar: o botão
+// some e fica só a frase "anexe ao cadastrar o primeiro empréstimo".
+// Para MOSTRAR é diferente: a ficha reúne as páginas de TODOS os registros do
+// cliente (docItensDoCliente), porque para o dono é "o documento do cliente",
+// não "o documento do empréstimo número 3".
+function _docRegistroAlvo(key){
+  var meus=allRecords().filter(function(l){return l&&clientKey(l.name)===key;});
+  if(!meus.length)return null;
+  var maisNovoPrimeiro=function(a,b){
+    var da=new Date(a.startDate||0).getTime()||0;
+    var db=new Date(b.startDate||0).getTime()||0;
+    return db-da;
+  };
+  var abertos=meus.filter(function(l){return !l.paid;}).sort(maisNovoPrimeiro);
+  if(abertos.length)return abertos[0];
+  return meus.slice().sort(maisNovoPrimeiro)[0];
+}
+// Um grupo (RG / CNH ou Comprovante de residência) dentro do bloco.
+function _docGrupoFichaHtml(key,campo,ultimo){
+  var itens=docItensDoCliente(key,campo);
+  var alvo=_docRegistroAlvo(key);
+  var h='<div style="padding:12px 14px'+(ultimo?'':';border-bottom:1px solid var(--ln)')+'">'
+    +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:8px">'
+    +'<span style="font-size:13px;font-weight:700">'+docNomeCampo(campo)+'</span>'
+    +'<span style="font-size:11.5px;color:var(--dim2)">'
+    +(itens.length?_segPlural(itens.length,'página','páginas'):'')+'</span></div>';
+  if(itens.length){
+    h+='<div style="display:flex;gap:7px;overflow-x:auto;padding-bottom:2px;margin-bottom:9px">'
+      + itens.map(function(it,i){
+          return _docMiniHtml(it.chave,i+1,'abrirDocCliente(\''+_js(key)+'\',\''+campo+'\','+i+')');
+        }).join('')
+      +'</div>';
+  }else{
+    h+='<div style="font-size:12.5px;color:var(--dim);line-height:1.5;margin-bottom:9px">'
+      +'Nenhuma foto guardada'+(alvo?'. Dá para escolher da galeria, várias páginas de uma vez.':'.')
+      +'</div>';
+  }
+  if(alvo){
+    h+='<label style="display:flex;align-items:center;justify-content:center;gap:6px;'
+      +'border:1.5px dashed var(--ln2);border-radius:10px;padding:11px;font-size:12.5px;'
+      +'font-weight:600;color:var(--dim);cursor:pointer;background:none">+ Adicionar página'
+      +'<input type="file" accept="image/*" multiple style="display:none"'
+      +' onchange="saveDocFicha(event,\''+_js(key)+'\',\''+campo+'\')"></label>';
+  }else{
+    h+='<div style="font-size:11.5px;color:var(--dim2);line-height:1.5">'
+      +'anexe ao cadastrar o primeiro empréstimo</div>';
+  }
+  return h+'</div>';
+}
+function fichaDocsHtml(key){
+  return '<div class="sec"><span class="sec-t">Documentos</span></div>'
+    +'<div class="bloco" style="padding:0;overflow:hidden">'
+    + _docGrupoFichaHtml(key,'docRG',false)
+    + _docGrupoFichaHtml(key,'docResidencia',true)
+    +'</div>';
+}
+// Anexar DEPOIS do cadastro, pela ficha. Aceita várias páginas de uma vez.
+function saveDocFicha(e,key,campo){
+  var fl=e.target.files;if(!fl||!fl.length)return;
+  var alvo=_docRegistroAlvo(key);
+  if(!alvo){showToast('Este cliente ainda não tem empréstimo para guardar a foto','error');return;}
+  var arquivos=[],i;
+  for(i=0;i<fl.length;i++)arquivos.push(fl[i]);
+  try{e.target.value='';}catch(err){}   // deixa escolher o MESMO arquivo de novo
+  _docComprimirLista(arquivos,0,[],function(novas){
+    if(!novas.length){showToast('Não consegui ler a imagem','error');return;}
+    var lista=docPaginas(alvo[campo]);
+    novas.forEach(function(foto){
+      var chave=docNovaChave(alvo.id,campo);
+      lista.push(chave);
+      docSet(chave,foto).catch(function(){
+        showToast('A foto não gravou neste aparelho','error');   // nunca falha calado
+      });
+    });
+    alvo[campo]=docGuardarPaginas(lista);
+    _docGravarRegistro(alvo);
+    renderAll();
+    showToast((novas.length===1?'1 página anexada':novas.length+' páginas anexadas')
+      +' · '+docNomeCampo(campo));
+  });
+}
+
 function _loansDoCliente(key){
   return loans.filter(function(l){return clientKey(l.name)===key;})
     .sort(function(a,b){
@@ -2676,7 +3256,7 @@ function fichaCorpo(key,op){
                  :'Venceu há '+Math.abs(_atraso)+' dia'+(Math.abs(_atraso)>1?'s':'')+'. Rolar para o próximo mês?')+'</div>'
       +'<div style="font-size:12.5px;color:var(--dim);line-height:1.5">Sobra '+fmt(bal)
       +'. Com o juro de '+alvo.interest+'% vira <span class="mono" style="color:var(--tx);font-weight:600">'
-      +fmt(_novoTotal)+'</span>, vencendo em '+_dm(addDays(today(),30))+'.</div>'
+      +fmt(_novoTotal)+'</span>, vencendo em '+_dm(addDays(today(),CONFIG.CICLO_DIAS))+'.</div>'
       +'<button class="btn btn-ac" style="margin-top:11px" onclick="openRenew(\''+_js(alvo.id)+'\')">'
       +sv(I.cycle,17)+'Renovar para o próximo mês</button></div>';
   }
@@ -2704,11 +3284,29 @@ function fichaCorpo(key,op){
       +'Por isso Receber e Renovar ficam apagados aqui.</div>';
   }
 
+  // ---- documentos do cliente (T2) ----
+  // Fica logo depois das ações: é onde o dono procura quando quer conferir
+  // ou anexar a cópia que chegou pelo WhatsApp.
+  html+=fichaDocsHtml(key);
+
   // ---- meu dinheiro com este cliente (soma do cliente inteiro) ----
+  // C10 — MESMO CONJUNTO E MESMO CRITERIO DO SELO DE PERFIL, QUE FICA LOGO ABAIXO.
+  // Antes este quadro somava so o que esta em `loans` — se o cliente tivesse um
+  // emprestimo na lista de inadimplentes, ele ficava de fora — e contava como
+  // "ainda em risco" ate emprestimo ja quitado. O selo de perfil, a um centimetro
+  // dali, usava allRecords() e ignorava os quitados. Dois numeros diferentes para
+  // a mesma pergunta, um do lado do outro.
+  // REGRA DO DONO: quitado NAO esta mais em risco — ele esta fechado.
+  // Capital e recebido continuam somando a vida toda (inclusive quitados), porque
+  // "tirei do bolso" e "ja voltou" sao a historia inteira do cliente.
   var capCli=0,recCli=0,riscoCli=0;
-  ls.forEach(function(l){
+  allRecords().forEach(function(l){
+    if(!l||clientKey(l.name)!==key)return;
     var g2=ledger(l);
-    capCli+=g2.capitalEmprestado;recCli+=g2.recebidoTotal;riscoCli+=g2.emRisco;
+    capCli=_r2(capCli+g2.capitalEmprestado);
+    recCli=_r2(recCli+g2.recebidoTotal);
+    if(l.paid)return;                     // quitado sai do "ainda em risco"
+    riscoCli=_r2(riscoCli+g2.emRisco);
   });
   if(op.dentroDaLista&&!expandedClientHistory[key]){
     // Na lista o detalhe fica atrás de um toque, como sempre foi.
@@ -2823,7 +3421,6 @@ function extratoHtml(loan){
 // ============================================================
 // RECEBER — tela própria, não janela
 // ============================================================
-function openPay(id){abrirReceber(id);}          // nome antigo, caminho novo
 function renderReceber(){
   var box=document.getElementById('receber-content');
   if(!box)return;
@@ -2906,8 +3503,13 @@ function renderReceber(){
     html+='<div class="sec"><span class="sec-t">Períodos já fechados</span></div>'
       +'<div class="bloco">'+passados.slice(-8).map(function(h){
         var mm=_histLabel(h.type);
-        return '<div class="kv"><span class="kv-l">'+fmtDate(h.date)+' · '+esc(mm.label.replace(/^\S+\s/,''))+'</span>'
-          +din(h.value,13.5,mm.sinal==='+'?'var(--gr)':'var(--rd)')+'</div>';
+        return '<div class="kv"><span class="kv-l">'+fmtDate(h.date)+' · '+esc(mm.label)+'</span>'
+          // C5 — a cor do valor sai de mm.valCor, que _histLabel ja define tipo a
+          // tipo. Antes saia do SINAL ("+" = verde, qualquer outra coisa = vermelho):
+          // com a renovacao passando a nao ter sinal, ela apareceria em vermelho,
+          // como se fosse prejuizo. E o desconto (verde no _histLabel) ja aparecia
+          // vermelho por esse mesmo motivo.
+          +din(h.value,13.5,mm.valCor)+'</div>';
       }).join('')+'</div>'
       +(passados.length>8?'<div style="font-size:11px;color:var(--dim2);padding:6px 16px 0">'
         +'Mostrando os 8 mais recentes — o extrato completo está na ficha.</div>':'');
@@ -2995,7 +3597,6 @@ function instalarApp(){
   _instalarEvt=null;
   renderConta();
 }
-function openPinSettings(){goScreen('conta');}   // nome antigo, caminho novo
 function pintarMenuNuvem(){
   var el=document.getElementById('menu-nuvem');
   if(!el)return;
@@ -3055,12 +3656,20 @@ function renderConta(){
        +'<button class="btn btn-gh" onclick="showPinScreen(\'remove\',\'\')">Remover PIN</button>'
       :'<button class="btn btn-gh" onclick="showPinScreen(\'set\',\'\')">'+sv(I.lock,17)+'Criar PIN de acesso</button>')
     +'<button class="btn btn-gh" onclick="openBackup()">'+sv(I.down,17)+'Backup e restaurar</button>'
+    // D7 — a data do ultimo backup em texto claro, sempre visivel.
+    +'<div style="font-size:12px;font-weight:600;line-height:1.5;color:'
+      +((diasDesdeBackup()==null||diasDesdeBackup()>=CONFIG.BACKUP_LEMBRETE_DIAS)?'var(--am)':'var(--dim)')+'">'
+      +esc(textoUltimoBackup())+'</div>'
     +(_instalarEvt?'<button class="btn btn-gh" onclick="instalarApp()">'+sv(I.install,17)+'Instalar no celular</button>':'')
     +'</div>'
     +'<div style="margin:10px 16px 0;font-size:12px;color:var(--dim);line-height:1.55">'
     +'<b style="color:var(--tx)">Sobre o PIN:</b> é uma trava simples contra quem pega o celular na mão — '
     +'não é criptografia. Quem tiver acesso técnico ao aparelho lê os dados assim mesmo. A proteção de '
     +'verdade é a senha da sua conta e o bloqueio de tela do celular.</div>';
+
+  // Rede de segurança: cópias automáticas, lixeira, conferir contas e cópia
+  // legível. Fica depois da parte de acesso e antes de sair da conta.
+  html+=_blocoRedeSegurancaHtml();
 
   if(logado){
     html+='<div style="margin:16px 14px 0"><button class="btn btn-gh" style="color:var(--rd)" onclick="doLogout()">'
@@ -3107,7 +3716,7 @@ function tabelaDesk(){
 }
 
 function openForm(pre){
-  formData=Object.assign({name:'',phone:'',address:'',amount:'',interest:'30',startDate:today(),note:'',docRG:'',docResidencia:'',parcelas:'1'},pre||{});
+  formData=Object.assign({name:'',phone:'',address:'',amount:'',interest:CONFIG.TAXA_PADRAO,startDate:today(),note:'',docRG:'',docResidencia:'',parcelas:'1'},pre||{});
   // Cliente conhecido abre com a taxa DELE, não com o padrão 30%. Só quando quem
   // chamou não impôs uma taxa (o "+ Novo empréstimo para X" não impõe).
   formData._rateManual=false;
@@ -3177,13 +3786,17 @@ function _syncTaxaCliente(){
 function renderForm(){
   var amt=parseFloat(formData.amount)||0;
   var rate=parseFloat(formData.interest)||0;
-  var rates=['10','15','20','25','30'];
+  var rates=CONFIG.TAXAS;
   var isCustom=rates.indexOf(String(formData.interest))<0;
+  // T1 — SAIU o capture="environment". Era ele que fazia o Android abrir SÓ a
+  // câmera: o dono recebe os documentos por WhatsApp e não conseguia pegar da
+  // galeria. ENTROU o multiple, para escolher várias páginas de uma vez.
   var docBtn=function(campo,rot,rotOk,tipo){
-    var tem=!!formData[campo];
-    return '<label class="doc-label'+(tem?' tem':'')+'">'+sv(tem?I.check:I.doc,20)
-      +'<span>'+(tem?rotOk:rot)+'</span>'
-      +'<input type="file" accept="image/*" capture="environment" style="display:none"'
+    var n=docPaginas(formData[campo]).length;
+    var rotulo=(n===0)?rot:(n===1?rotOk:(rotOk+' · '+n+' páginas'));
+    return '<label class="doc-label'+(n?' tem':'')+'">'+sv(n?I.check:I.doc,20)
+      +'<span>'+rotulo+'</span>'
+      +'<input type="file" accept="image/*" multiple style="display:none"'
       +' onchange="saveDoc(event,\''+tipo+'\')"></label>';
   };
   modal('<div class="modal-header"><span class="modal-title">Novo empréstimo</span>'
@@ -3213,7 +3826,7 @@ function renderForm(){
       +(isCustom?formData.interest+'%':'Outro')+'</button>'
       +'</div></div>'
     +'<div class="field"><label>Parcelas</label><div class="seg-control">'
-      +['1','2','3','4','6','12'].map(function(v){
+      +CONFIG.PARCELAS.map(function(v){
         return '<button class="seg-btn'+(String(formData.parcelas||'1')===v?' active':'')+'"'
           +' onclick="setParcelas(\''+v+'\',this)">'+v+'x</button>';}).join('')
       +'</div></div>'
@@ -3242,10 +3855,10 @@ function _previaEmprestimo(){
   if(n>1){
     html+='<div class="preview-row"><span>Parcelas</span><span>'+n+'x de '+fmt(total/n)+'</span></div>'
       +'<div style="font-size:11.5px;color:var(--dim2);margin-top:6px;line-height:1.45">1ª vence '
-      +fmtDate(addDays(formData.startDate||today(),30))+' · cada parcela acumula o juro do mês se atrasar</div>';
+      +fmtDate(addDays(formData.startDate||today(),CONFIG.CICLO_DIAS))+' · cada parcela acumula o juro do mês se atrasar</div>';
   }else{
     html+='<div style="font-size:11.5px;color:var(--dim2);margin-top:6px">Vence em '
-      +fmtDate(addDays(formData.startDate||today(),30))+'</div>';
+      +fmtDate(addDays(formData.startDate||today(),CONFIG.CICLO_DIAS))+'</div>';
   }
   return html+'</div>';
 }
@@ -3283,25 +3896,55 @@ function updatePreview(){
   if(box)box.innerHTML=_previaEmprestimo();
 }
 
-function saveDoc(e,tipo){
-  var f=e.target.files[0];if(!f)return;
+// Comprime UMA foto com o tamanho e a qualidade do bloco de configuração
+// (CONFIG.FOTO_MAX_PX e CONFIG.FOTO_QUALIDADE). É EXATAMENTE a compressão que
+// já existia dentro do saveDoc — só foi separada para poder rodar em várias
+// fotos, uma atrás da outra. Nada foi reescrito.
+function _docComprimirArquivo(f,cb){
   var r=new FileReader();
   r.onload=function(ev){
     var img=new Image();
     img.onload=function(){
-      var max=1000,w=img.width,h=img.height;
+      var max=CONFIG.FOTO_MAX_PX,w=img.width,h=img.height;
       if(w>h&&w>max){h=Math.round(h*max/w);w=max;}
       else if(h>=w&&h>max){w=Math.round(w*max/h);h=max;}
       var cv=document.createElement('canvas');cv.width=w;cv.height=h;
       cv.getContext('2d').drawImage(img,0,0,w,h);
-      var data;try{data=cv.toDataURL('image/jpeg',0.7);}catch(err){data=ev.target.result;}
-      if(tipo==='rg')formData.docRG=data;else formData.docResidencia=data;
-      renderForm();
+      var data;try{data=cv.toDataURL('image/jpeg',CONFIG.FOTO_QUALIDADE);}catch(err){data=ev.target.result;}
+      cb(data);
     };
-    img.onerror=function(){if(tipo==='rg')formData.docRG=ev.target.result;else formData.docResidencia=ev.target.result;renderForm();};
+    // Não deu para encolher: guarda a foto do jeito que veio. Nunca some.
+    img.onerror=function(){cb(ev.target.result);};
     img.src=ev.target.result;
   };
+  r.onerror=function(){cb(null);};
   r.readAsDataURL(f);
+}
+// Comprime a lista inteira NA ORDEM em que o dono escolheu as fotos.
+// Uma por vez, de propósito: celular antigo não aguenta cinco canvas juntos.
+function _docComprimirLista(arquivos,i,prontas,fim){
+  if(i>=arquivos.length){fim(prontas);return;}
+  _docComprimirArquivo(arquivos[i],function(data){
+    if(data)prontas.push(data);
+    _docComprimirLista(arquivos,i+1,prontas,fim);
+  });
+}
+// T1 — anexar no formulário de "Novo empréstimo". Aceita VÁRIOS arquivos.
+// Aqui as páginas ainda são as próprias fotos (data URL): o empréstimo ainda
+// não existe, então ainda não há id para montar a chave. Quem transforma foto
+// em chave é o addLoan(), no momento de gravar.
+function saveDoc(e,tipo){
+  var campo=(tipo==='rg')?'docRG':'docResidencia';
+  var fl=e.target.files;if(!fl||!fl.length)return;
+  var arquivos=[],i;
+  for(i=0;i<fl.length;i++)arquivos.push(fl[i]);
+  var jaTem=docPaginas(formData[campo]);
+  _docComprimirLista(arquivos,0,[],function(novas){
+    if(!novas.length){showToast('Não consegui ler a imagem','error');return;}
+    formData[campo]=docGuardarPaginas(jaTem.concat(novas));
+    renderForm();
+    showToast(novas.length===1?'1 página anexada':novas.length+' páginas anexadas');
+  });
 }
 function showSugg(){
   var q=formData.name.trim().toLowerCase();var box=document.getElementById('sugg-box');if(!box)return;
@@ -3371,9 +4014,17 @@ function addLoan(){
     // nao pode reescrever o lucro de meses ja fechados.
     history:[{date:start,type:'emprestimo',value:amt,rate:parseFloat(formData.interest),note:'Empréstimo de '+fmt(amt)+' · Juros '+formData.interest+'%'+(nParc>1?' · '+nParc+'x':'')}]
   };
-  // Fotos vão para o IndexedDB; o loan guarda só a chave
+  // Fotos vão para o IndexedDB; o loan guarda só a(s) chave(s).
+  // Cada página vira uma chave própria e o campo é gravado por
+  // docGuardarPaginas: 1 página continua string simples, 2+ viram lista JSON.
   ['docRG','docResidencia'].forEach(function(f){
-    if(isDataUrl(formData[f])){var key='doc_'+loan.id+'_'+f;loan[f]=key;docSet(key,formData[f]);}
+    var chaves=[];
+    docPaginas(formData[f]).forEach(function(foto){
+      if(!isDataUrl(foto))return;              // só foto de verdade vira chave
+      var key=docNovaChave(loan.id,f);
+      chaves.push(key);docSet(key,foto);
+    });
+    loan[f]=docGuardarPaginas(chaves);
   });
   if(nParc>1){
     loan.parcelas=[];
@@ -3381,12 +4032,12 @@ function addLoan(){
     for(var k=1;k<=nParc;k++){
       var pPrin=(k<nParc)?parseFloat((amt/nParc).toFixed(2)):parseFloat((amt-acc).toFixed(2));
       acc=parseFloat((acc+pPrin).toFixed(2));
-      loan.parcelas.push({id:uid(),n:k,principal:pPrin,currentAmount:parseFloat((pPrin*(1+rate)).toFixed(2)),dueDate:addDays(start,30*k),paid:false});
+      loan.parcelas.push({id:uid(),n:k,principal:pPrin,currentAmount:parseFloat((pPrin*(1+rate)).toFixed(2)),dueDate:addDays(start,CONFIG.CICLO_DIAS*k),paid:false});
     }
     syncParceledLoan(loan);
   }else{
     loan.currentAmount=parseFloat((amt*(1+rate)).toFixed(2));
-    loan.dueDate=addDays(start,30);
+    loan.dueDate=addDays(start,CONFIG.CICLO_DIAS);
   }
   loans.push(loan);save(loan.id);renderAll();closeModal();
   showToast('✅ Empréstimo de '+loan.name+(nParc>1?' ('+nParc+'x)':'')+' adicionado');
@@ -3426,7 +4077,7 @@ function _estornoExec(id,idx){
     note:'Estorno do pagamento de '+fmt(p.value)+' lançado em '+fmtDate(p.date)+(p.note?' ('+p.note+')':'')});
   save(id);renderAll();               // save() ja marca o emprestimo como pendente de sincronizacao
   showToast('↩️ Estorno de '+fmt(p.value)+' registrado · saldo '+fmt(getBalance(loan)));
-  openPay(id);                        // redesenha a janela com os numeros novos
+  abrirReceber(id);                   // redesenha a janela com os numeros novos
 }
 // Desconto lancado pela janela de pagamento
 function aplicarDesconto(id){
@@ -3493,14 +4144,41 @@ function focarValor(){
   el.focus();
   try{el.scrollIntoView({block:'center',behavior:'smooth'});}catch(e){}
 }
+// C11 — PAGAMENTO ACIMA DO SALDO NAO PODE ENTRAR INTEIRO.
+// Se o dono digita 2.000 num saldo de 1.250, os 750 a mais nao existem: nao ha
+// divida para eles abaterem. Gravar o valor cheio inflava o "recebido" e o lucro
+// com dinheiro que nunca entrou por causa DESTE emprestimo.
+// Agora: passou do saldo em mais de alguns centavos, o app PERGUNTA antes (na
+// folha de confirmacao do proprio app, nunca no confirm() do navegador, que no
+// celular aparece como alerta de site); e, de qualquer jeito, grava no maximo o
+// saldo. A folga de 0,01 continua valendo para arredondamento de centavo.
 function doPayment(id,amount,note){
+  var loan=loans.find(function(l){return l.id===id;});if(!loan||amount<=0)return;
+  var balance=getBalance(loan);
+  amount=parseFloat(amount);
+  if(amount>balance+0.01){
+    _fecharTeclado();
+    pedirConfirmacao({
+      titulo:fmt(amount)+' é mais que o saldo de '+fmt(balance)+'.',
+      texto:'Registrar só o saldo de '+fmt(balance)+'? O que passa disso não abate '
+        +'nada e não entra no seu lucro.',
+      ok:'Registrar '+fmt(balance)
+    },function(){_doPaymentExec(id,balance,note);});
+    return;
+  }
+  _doPaymentExec(id,amount,note);
+}
+function _doPaymentExec(id,amount,note){
   var loan=loans.find(function(l){return l.id===id;});if(!loan||amount<=0)return;
   var balance=getBalance(loan);
   amount=parseFloat(amount);
   if(amount>=balance-0.01){
     // Final — quita
+    // C11 — grava NO MAXIMO o saldo. Sem o Math.min, o excedente entrava como
+    // dinheiro recebido e o razao nunca fechava com o cartao.
+    var valorQuita=Math.min(amount,balance);
     (loan.payments||[]).forEach(function(p){loan.history.push({date:p.date,type:'pagamento_parcial',value:p.value,note:p.note||''});});
-    loan.history.push({date:today(),type:'pagamento_final',value:amount,note:(note?note+' · ':'')+'Dívida quitada! Pagamento de '+fmt(amount)});
+    loan.history.push({date:today(),type:'pagamento_final',value:valorQuita,note:(note?note+' · ':'')+'Dívida quitada! Pagamento de '+fmt(valorQuita)});
     loan.paid=true;loan.currentAmount=0;loan.payments=[];
     showToast('✅ Dívida de '+loan.name+' quitada!');
   }else{
@@ -3549,7 +4227,7 @@ function updateRenewPreview(){
   var base=parseFloat((balance-desc).toFixed(2));
   var juros=parseFloat((base*loan.interest/100).toFixed(2));
   var newTotal=parseFloat((base+juros).toFixed(2));
-  var newDue=addDays(today(),30);
+  var newDue=addDays(today(),CONFIG.CICLO_DIAS);
   box.innerHTML='<div class="preview-box"><div class="preview-label">Cálculo</div>'
     +'<div class="preview-row"><span>Saldo devedor atual</span><span style="font-weight:700">'+fmt(balance)+'</span></div>'
     +(desc>0?'<div class="preview-row"><span>Desconto</span><span style="color:var(--gr)">-'+fmt(desc)+'</span></div>':'')
@@ -3595,7 +4273,7 @@ function _doRenewExec(id,desc,dmot){
   loan.currentAmount=newTotal;
   loan.originalAmount=balance;
   loan.startDate=today();
-  loan.dueDate=addDays(today(),30);
+  loan.dueDate=addDays(today(),CONFIG.CICLO_DIAS);
   loan.payments=[];
   save(id);renderAll();closeModal();
   showToast('🔄 Renovado! Novo total: '+fmt(newTotal)+(desc>0?' (desconto de '+fmt(desc)+')':''));
@@ -3670,6 +4348,35 @@ function updateEditPreview(){
     +(paid>0?'<div class="preview-row"><span>Já pago neste período</span><span style="color:var(--gr)">'+fmt(paid)+'</span></div><div class="preview-row total"><span>Saldo restante</span><span>'+fmt(Math.max(0,total-paid))+'</span></div>':'')
     +'</div>';
 }
+// C1 — CORRIGE O LANCAMENTO 'emprestimo' ORIGINAL DO HISTORICO.
+// POR QUE ISTO PRECISA EXISTIR. O extrato (razao) NAO le l.principal nem
+// l.interest: ele refaz a conta inteira a partir dos lancamentos do historico.
+// Entao editar so os campos do cartao deixava o cartao dizendo uma coisa e o
+// extrato outra — o extrato continuava calculando com o valor e a taxa velhos.
+// QUANDO E LEGITIMO REESCREVER O PASSADO. So aqui: emprestimo com ZERO
+// renovacoes. Sem renovacao nenhum mes fechou, entao nao ha lucro de mes passado
+// para proteger — a digitacao errada e a unica coisa que existe.
+// SE HOUVER MAIS DE UM LANCAMENTO 'emprestimo' (o dono adicionou dinheiro depois),
+// so o PRIMEIRO recebe o novo valor; os outros ficam intactos. O primeiro fica
+// com "o valor total novo MENOS o que foi adicionado depois", para o capital do
+// razao bater exatamente com l.principal.
+// A TAXA e reescrita em TODOS os lancamentos de emprestimo. A taxa e um campo
+// unico do emprestimo e nenhum ciclo fechou; se um lancamento antigo ficasse com
+// a taxa velha, o total do razao nao bateria com o currentAmount do cartao.
+function _corrigirEmprestimoOriginal(l,amount,interest){
+  var hs=(l&&l.history)||[];
+  var idxs=[];
+  hs.forEach(function(h,i){if(h&&(h.type==='emprestimo'||h.type==='empréstimo'))idxs.push(i);});
+  if(!idxs.length)return;                  // registro antigo sem lancamento: nada a corrigir
+  var outros=0;
+  for(var k=1;k<idxs.length;k++)outros+=parseFloat(hs[idxs[k]].value)||0;
+  // Se o dono baixar o total para menos do que ele mesmo adicionou depois, este
+  // numero fica negativo. E raro e e o que ele pediu; nao truncamos, porque
+  // truncar faria o extrato parar de bater com o saldo do cartao — e a regra de
+  // ouro do app e que esses dois numeros sao sempre iguais.
+  hs[idxs[0]].value=parseFloat((amount-outros).toFixed(2));
+  for(var j=0;j<idxs.length;j++)hs[idxs[j]].rate=interest;
+}
 function saveEdit(id){
   var l=loans.find(function(x){return x.id===id;});if(!l)return;
   var name=document.getElementById('ed-name').value.trim();
@@ -3686,10 +4393,24 @@ function saveEdit(id){
     var due=document.getElementById('ed-due').value||l.dueDate;
     if(loanRenovacoes(l)===0){
       // Nunca renovado: recalcular do zero esta certo (nao ha juros acumulado a perder)
+      // C2 — DESCONTO JA CONCEDIDO NAO PODE SUMIR NO RECALCULO.
+      // O recalculo abaixo refaz o total do zero. Se o dono ja tinha perdoado
+      // parte da divida, esse abatimento tem de continuar valendo: sem isto,
+      // editar o cadastro fazia o desconto desaparecer e a divida voltava a subir.
+      // Medido ANTES de mexer em qualquer campo, porque loanDescontos() le o razao.
+      var descJa=loanDescontos(l);
+      // 'ajuste' NAO precisa entrar nesta conta: o unico ajuste com valor
+      // diferente de zero e o do ramo de baixo (ja renovado), e um emprestimo que
+      // passou por ele nunca mais volta para este ramo. O ajuste que _regDesconto
+      // grava tem valor 0 (e so um bilhete dizendo que o desconto zerou o saldo).
       l.principal=parseFloat(amount.toFixed(2));
       l.originalAmount=parseFloat(amount.toFixed(2));
       l.interest=interest;
-      l.currentAmount=parseFloat((amount*(1+interest/100)).toFixed(2));
+      l.currentAmount=parseFloat((amount*(1+interest/100)-descJa).toFixed(2));
+      if(l.currentAmount<0)l.currentAmount=0;   // desconto maior que o novo total: divida zerada
+      // C1 — o historico tambem tem de ser corrigido, senao o extrato continua
+      // calculando com o valor e a taxa antigos. Ver o comentario da funcao.
+      _corrigirEmprestimoOriginal(l,amount,interest);
     }else{
       // Ja renovado: o saldo acumulado e sagrado. So a DIFERENCA entra.
       var antes=loanPrincipal(l);
@@ -3702,7 +4423,11 @@ function saveEdit(id){
         l.principal=parseFloat(amount.toFixed(2));
         l.originalAmount=parseFloat(((l.originalAmount||0)+dif).toFixed(2));
         l.history=l.history||[];
-        l.history.push({type:'ajuste',date:today(),value:delta,
+        // C3 — grava TAMBEM o capital puro (a diferenca SEM o juro) e a taxa
+        // usada. `value` continua sendo o que entra no saldo (capital + juro);
+        // `capital` e o que entra no capital emprestado. Sem os dois separados o
+        // razao tinha de adivinhar, e adivinhava errado.
+        l.history.push({type:'ajuste',date:today(),value:delta,capital:dif,rate:interest,
           note:'Ajuste do valor emprestado: '+fmt(antes)+' → '+fmt(amount)+'. Saldo '+(delta>=0?'+':'')+fmt(delta)+' (diferença de '+fmt(dif)+' com juros '+interest+'%). Saldo: '+fmt(saldoAntes)+' → '+fmt(l.currentAmount)});
       }
     }
@@ -3732,7 +4457,16 @@ function openReceipt(id){
     +'<hr style="border:none;border-top:1px dashed #ccc;margin:5px 0">'
     +'<div style="display:flex;justify-content:space-between"><span>Data:</span><span>'+fmtDate(l.startDate)+'</span></div>'
     +'<div style="display:flex;justify-content:space-between"><span>Vencimento:</span><span>'+fmtDate(l.dueDate)+'</span></div>'
-    +'<div style="display:flex;justify-content:space-between"><span>Emprestado:</span><span>'+fmt(l.originalAmount)+'</span></div>'
+    // C6 — "Emprestado" tem de ser o dinheiro que de fato saiu do bolso.
+    // A renovacao sobrescreve l.originalAmount com o SALDO rolado, entao o recibo
+    // que ia para o cliente dizia que ele pegou o saldo (ex.: 1.562,50) quando na
+    // verdade ele pegou 1.000,00. loanPrincipal(l) devolve o valor certo — ele nao
+    // se mexe em renovacao. O saldo rolado continua aparecendo, mas com o nome
+    // correto, na linha de baixo.
+    +'<div style="display:flex;justify-content:space-between"><span>Emprestado:</span><span>'+fmt(loanPrincipal(l))+'</span></div>'
+    +(loanRenovacoes(l)>0
+      ?'<div style="display:flex;justify-content:space-between"><span>Saldo do mês anterior:</span><span>'+fmt(l.originalAmount)+'</span></div>'
+      :'')
     +'<div style="display:flex;justify-content:space-between"><span>Juros:</span><span>'+l.interest+'%/mês</span></div>'
     +(paidPeriod>0?'<div style="display:flex;justify-content:space-between"><span>Já pago:</span><span style="color:#16a34a">'+fmt(paidPeriod)+'</span></div>':'')
     +(totalDesc>0?'<div style="display:flex;justify-content:space-between"><span>Desconto:</span><span>-'+fmt(totalDesc)+'</span></div>':'')
@@ -3748,7 +4482,12 @@ function shareReceipt(id){
   var l=loans.find(function(x){return x.id===id;});if(!l)return;
   var balance=getBalance(l);var pp=getPaidPeriod(l);
   var td=loanDescontos(l);
-  var msg='🧾 *COMPROVANTE*\n\n👤 '+l.name+'\n📅 '+fmtDate(l.startDate)+'\n⏰ Vence: '+fmtDate(l.dueDate)+'\n💵 Original: '+fmt(l.originalAmount)+'\n📈 Juros: '+l.interest+'%/mês'+(pp>0?'\n✅ Já pago: '+fmt(pp):'')+(td>0?'\n🏷️ Desconto: -'+fmt(td):'')+'\n━━━━━━\n💰 *SALDO: '+fmt(balance)+'*';
+  // C6 — mesma correcao do recibo da tela: "Emprestado" e o dinheiro que saiu do
+  // bolso (loanPrincipal), nao o saldo que a renovacao gravou em originalAmount.
+  // Esta mensagem vai pelo WhatsApp para o CLIENTE: dizer que ele pegou o saldo
+  // rolado em vez do valor emprestado e o tipo de erro que gera briga.
+  var rolado=(loanRenovacoes(l)>0)?'\n🔄 Saldo do mês anterior: '+fmt(l.originalAmount):'';
+  var msg='🧾 *COMPROVANTE*\n\n👤 '+l.name+'\n📅 '+fmtDate(l.startDate)+'\n⏰ Vence: '+fmtDate(l.dueDate)+'\n💵 Emprestado: '+fmt(loanPrincipal(l))+rolado+'\n📈 Juros: '+l.interest+'%/mês'+(pp>0?'\n✅ Já pago: '+fmt(pp):'')+(td>0?'\n🏷️ Desconto: -'+fmt(td):'')+'\n━━━━━━\n💰 *SALDO: '+fmt(balance)+'*';
   window.open(waLink(l.phone)+'?text='+encodeURIComponent(msg),'_blank');
 }
 
@@ -3757,23 +4496,17 @@ function shareReceipt(id){
 // (pagamento lancado por engano e desfeito).
 function _histLabel(t,current){
   if(t==='emprestimo'||t==='empréstimo')return{label:'Emprestei',cor:'var(--ac)',valCor:'var(--rd)',sinal:'-'};
-  if(t==='pagamento_final')return{label:'Quitado',cor:'var(--gr)',valCor:'var(--gr)',sinal:'+'};
-  if(t==='renovacao')return{label:'Rolou para o mês seguinte',cor:'var(--am)',valCor:'var(--am)',sinal:'+'};
+  // C5 — 'pagamento_total' e o tipo ANTIGO de quitacao (hoje o app grava
+  // 'pagamento_final'). Ele continua reconhecido aqui para os lancamentos ja
+  // gravados no passado nao voltarem a aparecer como um "Recebi" qualquer.
+  if(t==='pagamento_final'||t==='pagamento_total')return{label:'Quitado',cor:'var(--gr)',valCor:'var(--gr)',sinal:'+'};
+  // C5 — renovacao NAO e dinheiro entrando: ela so rola o saldo para o mes
+  // seguinte cobrando o juro. Por isso vai SEM sinal, igual ao que o razao ja faz.
+  if(t==='renovacao')return{label:'Rolou para o mês seguinte',cor:'var(--am)',valCor:'var(--am)',sinal:''};
   if(t==='ajuste')return{label:'Ajuste',cor:'var(--ac)',valCor:'var(--ac)',sinal:'+'};
   if(t==='desconto')return{label:'Desconto',cor:'var(--gr)',valCor:'var(--gr)',sinal:'-'};
   if(t==='estorno')return{label:'Estorno',cor:'var(--rd)',valCor:'var(--rd)',sinal:'-'};
   return{label:'Recebi'+(current?' (mês atual)':''),cor:'var(--gr)',valCor:'var(--gr)',sinal:'+'};
-}
-// Cores do extrato novo (o rótulo e o sinal vêm do ledger, não daqui).
-function _ledgerCores(t){
-  t=t||'';
-  if(t==='emprestimo'||t==='empréstimo')return{cor:'var(--ac)',valCor:'var(--rd)'};
-  if(t==='renovacao')return{cor:'var(--am)',valCor:'var(--am)'};
-  if(t==='ajuste')return{cor:'var(--ac)',valCor:'var(--ac)'};
-  if(t==='desconto')return{cor:'var(--gr)',valCor:'var(--gr)'};
-  if(t==='estorno')return{cor:'var(--rd)',valCor:'var(--rd)'};
-  if(t.indexOf('pagamento')>=0)return{cor:'var(--gr)',valCor:'var(--gr)'};
-  return{cor:'var(--dim2)',valCor:'var(--dim)'};
 }
 function openHistory(id){
   var l=allRecords().find(function(x){return x.id===id;});if(!l)return;
@@ -3784,24 +4517,26 @@ function openHistory(id){
   var totalDesc=lg.descontoTotal;
 
   // ---- documentos ----
-  var docHtml='';
-  if(l.docRG||l.docResidencia){
-    docHtml='<div class="sec" style="margin:14px 0 8px;padding:0"><span class="sec-t">Documentos</span>'
-      +'<span style="font-size:11.5px;color:var(--dim2)">toque para ampliar</span></div>'
-      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
-      +(l.docRG?'<button style="padding:0;border-radius:11px;overflow:hidden;border:1px solid var(--ln)"'
-        +' onclick="openDocFull(\''+_js(id)+'\',\'docRG\')">'
-        +'<img id="histdoc-docRG" alt="RG / CNH" style="width:100%;display:block;cursor:zoom-in"></button>':'')
-      +(l.docResidencia?'<button style="padding:0;border-radius:11px;overflow:hidden;border:1px solid var(--ln)"'
-        +' onclick="openDocFull(\''+_js(id)+'\',\'docResidencia\')">'
-        +'<img id="histdoc-docResidencia" alt="Comprovante de residência"'
-        +' style="width:100%;display:block;cursor:zoom-in"></button>':'')
-      +'</div>';
-  }else{
-    docHtml='<div class="sec" style="margin:14px 0 8px;padding:0"><span class="sec-t">Documentos</span></div>'
-      +'<div class="bloco plano"><div style="padding:14px;font-size:12.5px;color:var(--dim2);text-align:center">'
-      +'Nenhuma foto guardada neste empréstimo.</div></div>';
-  }
+  // Todas as páginas dos dois documentos, lidas SEMPRE por docPaginas().
+  var docCorpo='',temDoc=false;
+  ['docRG','docResidencia'].forEach(function(f){
+    var pags=docPaginas(l[f]);
+    if(!pags.length)return;
+    temDoc=true;
+    docCorpo+='<div style="margin-bottom:9px">'
+      +'<div style="font-size:11.5px;color:var(--dim);margin-bottom:5px">'
+      +docNomeCampo(f)+' · '+_segPlural(pags.length,'página','páginas')+'</div>'
+      +'<div style="display:flex;gap:7px;overflow-x:auto;padding-bottom:2px">'
+      + pags.map(function(k,i){
+          return _docMiniHtml(k,i+1,'abrirDocRegistro(\''+_js(id)+'\',\''+f+'\','+i+')');
+        }).join('')
+      +'</div></div>';
+  });
+  var docHtml='<div class="sec" style="margin:14px 0 8px;padding:0"><span class="sec-t">Documentos</span>'
+    +(temDoc?'<span style="font-size:11.5px;color:var(--dim2)">toque para ampliar</span>':'')+'</div>'
+    +(temDoc?docCorpo
+      :'<div class="bloco plano"><div style="padding:14px;font-size:12.5px;color:var(--dim2);text-align:center">'
+       +'Nenhuma foto guardada neste empréstimo.</div></div>');
 
   // ---- parcelas (quando for o caso) ----
   var parcHtml='';
@@ -3841,38 +4576,109 @@ function openHistory(id){
        +'<div style="font-size:11.5px;color:var(--dim2);margin-top:4px;line-height:1.5">'
        +'Use quando o cliente tem vários empréstimos e só este travou. Os outros continuam ativos.</div>':''));
   // Carrega as fotos do IndexedDB (ou usa base64 legado direto)
-  ['docRG','docResidencia'].forEach(function(f){
-    var ref=l[f];if(!ref)return;
-    var img=document.getElementById('histdoc-'+f);if(!img)return;
-    if(isDataUrl(ref)){img.src=ref;return;}
-    docGet(ref).then(function(data){if(data)img.src=data;else img.alt='(foto não encontrada)';})
-      .catch(function(){img.alt='(erro ao abrir foto)';});
-  });
+  _pintarMiniaturasDoc();
 }
 // Foto do documento em tela cheia — desenhada dentro do proprio app (nada de
 // window.open com data URL, que muitos navegadores de celular bloqueiam).
 var _docFullZoom=false;
-function openDocFull(loanId,field){
-  var l=allRecords().find(function(x){return x.id===loanId;});if(!l)return;
-  var ref=l[field];if(!ref)return;
-  var titulo=(field==='docRG')?'RG / CNH':'Comprovante de residência';
-  closeDocFull();
+// T3 — a tela cheia agora trabalha com uma LISTA de páginas e uma POSIÇÃO.
+// _docFullLista guarda itens {chave, campo, regId}: a chave é a foto, e campo
+// + regId dizem de qual documento de qual registro ela saiu (é o que o botão
+// de apagar precisa saber).
+var _docFullLista=[], _docFullPos=0, _docFullTitulo='';
+// Nome do documento em português, um lugar só.
+function docNomeCampo(campo){return campo==='docRG'?'RG / CNH':'Comprovante de residência';}
+// Páginas de UM registro (usada no histórico do empréstimo).
+function docItensDoRegistro(regId,campo){
+  var l=allRecords().find(function(x){return x.id===regId;});
+  if(!l)return [];
+  return docPaginas(l[campo]).map(function(k){return {chave:k,campo:campo,regId:regId};});
+}
+// Páginas de TODOS os registros do cliente, na ordem dos registros (usada na
+// ficha). Para o dono é "o documento do cliente", não "o do empréstimo 3".
+function docItensDoCliente(key,campo){
+  var itens=[],vistos={};
+  allRecords().forEach(function(l){
+    if(!l||clientKey(l.name)!==key)return;
+    docPaginas(l[campo]).forEach(function(k){
+      if(vistos[k])return;                     // mesma foto citada em dois registros
+      vistos[k]=1;itens.push({chave:k,campo:campo,regId:l.id});
+    });
+  });
+  return itens;
+}
+function abrirDocRegistro(regId,campo,pos){
+  var l=allRecords().find(function(x){return x.id===regId;});if(!l)return;
+  openDocFull(docItensDoRegistro(regId,campo),pos||0,docNomeCampo(campo)+' · '+l.name);
+}
+function abrirDocCliente(key,campo,pos){
+  openDocFull(docItensDoCliente(key,campo),pos||0,
+    docNomeCampo(campo)+' · '+(_nomeDoCliente(key)||'Cliente'));
+}
+function openDocFull(itens,pos,titulo){
+  if(!itens||!itens.length)return;
+  closeDocFull();     // fecha ANTES de guardar a lista: closeDocFull limpa ela
+  _docFullLista=itens;
+  _docFullPos=Math.max(0,Math.min(parseInt(pos,10)||0,itens.length-1));
+  _docFullTitulo=titulo||'Documento';
   _docFullZoom=false;
   document.body.insertAdjacentHTML('beforeend','<div id="docview-overlay" style="position:fixed;inset:0;background:var(--tx);z-index:9500;display:flex;flex-direction:column">'
     +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--tx);flex:0 0 auto">'
-    +'<div style="font-size:12px;font-weight:700;color:var(--ln);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+titulo+' · '+esc(l.name)+'</div>'
-    +'<div style="display:flex;gap:6px;flex:0 0 auto">'
-    +'<button id="docview-zoom" onclick="toggleDocZoom()" style="background:var(--tx);border:none;color:var(--ln);border-radius:8px;padding:7px 11px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Ampliar</button>'
-    +'<button onclick="closeDocFull()" style="background:var(--tx);border:none;color:var(--ln);border-radius:8px;padding:7px 11px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">✕ Fechar</button>'
-    +'</div></div>'
+    +'<div id="docview-titulo" style="font-size:12px;font-weight:700;color:var(--ln);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>'
+    +'<button id="docview-zoom" onclick="toggleDocZoom()" style="flex:0 0 auto;background:var(--tx);border:none;color:var(--ln);border-radius:8px;padding:7px 11px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Ampliar</button>'
+    +'</div>'
+    // linha de passar página: seta, "página 2 de 3", seta
+    +'<div style="display:flex;align-items:center;justify-content:center;gap:12px;padding:0 12px 8px;background:var(--tx);flex:0 0 auto">'
+    +'<button id="docview-ant" onclick="_docFullIr(-1)" aria-label="Página anterior"'
+    +' style="background:none;border:1px solid var(--ln);color:var(--ln);border-radius:9px;width:40px;height:34px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit">‹</button>'
+    +'<span id="docview-cont" style="font-size:12px;font-weight:700;color:var(--ln);min-width:96px;text-align:center"></span>'
+    +'<button id="docview-prox" onclick="_docFullIr(1)" aria-label="Próxima página"'
+    +' style="background:none;border:1px solid var(--ln);color:var(--ln);border-radius:9px;width:40px;height:34px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit">›</button>'
+    +'</div>'
     +'<div id="docview-scroll" style="flex:1;overflow:auto;-webkit-overflow-scrolling:touch;padding:10px;text-align:center">'
     +'<img id="docview-img" alt="Carregando foto…" style="max-width:100%;height:auto;border-radius:8px">'
     +'</div>'
-    +'<div style="padding:7px 12px;background:var(--tx);font-size:10px;color:var(--dim2);text-align:center;flex:0 0 auto">Use “Ampliar” ou o zoom de dois dedos para ler o documento.</div>'
+    +'<div style="padding:4px 12px 2px;background:var(--tx);font-size:10px;color:var(--dim2);text-align:center;flex:0 0 auto">Use “Ampliar” ou o zoom de dois dedos para ler o documento.</div>'
+    // os dois botões de baixo: fechar e apagar esta página
+    +'<div style="display:flex;gap:8px;padding:8px 12px 12px;background:var(--tx);flex:0 0 auto">'
+    +'<button onclick="closeDocFull()" style="flex:1;background:var(--ln);border:none;color:var(--tx);border-radius:10px;padding:12px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Fechar</button>'
+    +'<button onclick="apagarPaginaAtual()" style="flex:1;background:var(--rd);border:none;color:var(--pn);border-radius:10px;padding:12px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Apagar esta página</button>'
+    +'</div>'
     +'</div>');
-  var img=document.getElementById('docview-img');if(!img)return;
-  if(isDataUrl(ref)){img.src=ref;return;}
-  docGet(ref).then(function(data){
+  _docFullPintar();
+}
+// Passa de página. Nunca sai das pontas (as setas já ficam desabilitadas lá).
+function _docFullIr(passo){
+  var novo=_docFullPos+passo;
+  if(novo<0||novo>=_docFullLista.length)return;
+  _docFullPos=novo;
+  _docFullZoom=false;
+  var img=document.getElementById('docview-img');
+  if(img){img.style.maxWidth='100%';img.style.width='auto';}
+  var bz=document.getElementById('docview-zoom');
+  if(bz)bz.textContent='Ampliar';
+  _docFullPintar();
+}
+// Redesenha título, contador, setas e a foto da posição atual.
+function _docFullPintar(){
+  var n=_docFullLista.length, it=_docFullLista[_docFullPos];
+  var t=document.getElementById('docview-titulo');
+  if(t)t.textContent=_docFullTitulo;
+  var c=document.getElementById('docview-cont');
+  if(c)c.textContent='página '+(_docFullPos+1)+' de '+n;
+  var ant=document.getElementById('docview-ant'), prox=document.getElementById('docview-prox');
+  if(ant){ant.disabled=(_docFullPos<=0);ant.style.opacity=ant.disabled?'.3':'1';}
+  if(prox){prox.disabled=(_docFullPos>=n-1);prox.style.opacity=prox.disabled?'.3':'1';}
+  var img=document.getElementById('docview-img');
+  if(!img||!it)return;
+  img.removeAttribute('src');
+  img.alt='Carregando foto…';
+  // Formato antigo de tudo: a foto está gravada dentro do próprio campo.
+  if(isDataUrl(it.chave)){img.src=it.chave;return;}
+  var chave=it.chave;
+  docGet(chave).then(function(data){
+    var atual=_docFullLista[_docFullPos];
+    if(!atual||atual.chave!==chave)return;    // o dono já passou de página
     if(data)img.src=data;
     else img.alt='(foto não encontrada neste aparelho nem na nuvem)';
   }).catch(function(){img.alt='(erro ao abrir a foto)';});
@@ -3885,7 +4691,110 @@ function toggleDocZoom(){
   var b=document.getElementById('docview-zoom');
   if(b)b.textContent=_docFullZoom?'Reduzir':'Ampliar';
 }
-function closeDocFull(){var ov=document.getElementById('docview-overlay');if(ov)ov.remove();}
+function closeDocFull(){
+  var ov=document.getElementById('docview-overlay');if(ov)ov.remove();
+  _docFullLista=[];_docFullPos=0;
+}
+
+// ------------------------------------------------------------
+// MINIATURAS — uma função só para todas as telas
+// ------------------------------------------------------------
+// Qualquer <img data-doc-chave="..."> desenhada na tela é preenchida aqui.
+// Assim a ficha do cliente, o histórico do empréstimo e qualquer tela nova
+// carregam a foto do mesmo jeito, sem repetir código.
+// Uma miniatura de página: ~74px de largura, com o número da página embaixo.
+// A foto entra depois, por _pintarMiniaturasDoc().
+function _docMiniHtml(chave,n,onclick){
+  return '<button style="flex:0 0 auto;padding:0;border:1px solid var(--ln);background:var(--pn);'
+    +'border-radius:10px;overflow:hidden;width:74px;cursor:zoom-in;font-family:inherit"'
+    +' aria-label="Abrir página '+n+'" onclick="'+onclick+'">'
+    +'<img data-doc-chave="'+esc(chave)+'" alt="página '+n+'"'
+    +' style="width:74px;height:58px;object-fit:cover;display:block;background:var(--pn2)">'
+    +'<span style="display:block;font-size:10px;color:var(--dim2);padding:3px 0 4px">pág. '+n+'</span>'
+    +'</button>';
+}
+function _pintarMiniaturasDoc(){
+  if(typeof document==='undefined')return;
+  var lista=document.querySelectorAll('img[data-doc-chave]');
+  for(var i=0;i<lista.length;i++){
+    (function(img){
+      if(img.getAttribute('data-doc-carregada'))return;   // já pedida
+      img.setAttribute('data-doc-carregada','1');
+      var chave=img.getAttribute('data-doc-chave');
+      if(!chave)return;
+      if(isDataUrl(chave)){img.src=chave;return;}          // formato antigo
+      docGet(chave).then(function(d){
+        if(d)img.src=d;else img.alt='(foto não encontrada)';
+      }).catch(function(){img.alt='(erro ao abrir foto)';});
+    })(lista[i]);
+  }
+}
+
+// ------------------------------------------------------------
+// T4 — APAGAR UMA PÁGINA PASSA PELA LIXEIRA DE 30 DIAS
+// ------------------------------------------------------------
+// REGRA: apagar uma página NÃO chama docDel na hora. A foto continua no
+// aparelho E na nuvem. O que acontece é:
+//   1) a chave sai da lista do registro e o campo é regravado;
+//   2) um item vai para a lixeira com o que é preciso para desfazer;
+//   3) a imagem só é apagada de verdade quando o item vencer os 30 dias ou
+//      quando o dono mandar "apagar de vez" na lixeira.
+// Motivo: foto de documento é dinheiro. Toque errado não pode custar a foto.
+function _docGravarRegistro(reg){
+  if(!reg||!reg.id)return;
+  if(loans.some(function(l){return l.id===reg.id;}))save(reg.id);
+  else saveInad(reg.id);
+}
+function apagarPaginaAtual(){
+  var it=_docFullLista[_docFullPos];if(!it)return;
+  var reg=allRecords().find(function(x){return x.id===it.regId;});
+  if(!reg){showToast('Registro não encontrado','error');return;}
+  pedirConfirmacao({
+    titulo:'Apagar esta página?',
+    texto:docNomeCampo(it.campo)+' de '+(reg.name||'NÃO INFORMADO')
+      +' · página '+(_docFullPos+1)+' de '+_docFullLista.length+'.\n\n'
+      +'A foto vai para a lixeira: dá para trazer de volta por '+SEG_LIXO_DIAS
+      +' dias. Só depois disso ela é apagada de verdade.',
+    ok:'Apagar página',perigo:true},function(){
+    _apagarPaginaDocExec(it.regId,it.campo,it.chave);
+  });
+}
+function _apagarPaginaDocExec(regId,campo,chave){
+  var reg=allRecords().find(function(x){return x.id===regId;});
+  if(!reg){showToast('Registro não encontrado','error');return;}
+  var lista=docPaginas(reg[campo]);
+  var i=lista.indexOf(chave);
+  if(i<0){showToast('Esta página já não está no registro');return;}
+  lista.splice(i,1);
+  reg[campo]=docGuardarPaginas(lista);   // sobrando 1, volta a ser string simples
+  _docGravarRegistro(reg);
+  // A imagem CONTINUA gravada. Quem sabe desfazer é a lixeira.
+  guardarNaLixeira('pagina_documento',{
+    id:'pag:'+chave,
+    name:reg.name||'NÃO INFORMADO',
+    chave:chave,campo:campo,regId:regId
+  }).then(function(){
+    showToast('🗑️ Página na lixeira — dá para voltar por '+SEG_LIXO_DIAS+' dias');
+  }).catch(function(){
+    // A lixeira falhou: avisa, mas a foto continua gravada do mesmo jeito.
+    showToast('Página removida, mas não consegui guardar na lixeira','warn');
+  });
+  // Tira a página da tela cheia sem fechar tudo à toa.
+  var pos=-1,k;
+  for(k=0;k<_docFullLista.length;k++)if(_docFullLista[k].chave===chave)pos=k;
+  if(pos>=0)_docFullLista.splice(pos,1);
+  if(!_docFullLista.length)closeDocFull();
+  else{
+    if(_docFullPos>=_docFullLista.length)_docFullPos=_docFullLista.length-1;
+    _docFullPintar();
+  }
+  renderAll();
+  // Se a janela do histórico do empréstimo estiver aberta atrás, redesenha:
+  // senão ela continuaria mostrando a miniatura de uma página que já saiu.
+  var mc=document.getElementById('modal-container');
+  if(mc&&mc.innerHTML&&allRecords().some(function(x){return x.id===regId;}))openHistory(regId);
+  if(typeof _repintarConta==='function')_repintarConta();
+}
 
 // ============================================================
 // INADIMPLENTES
@@ -4031,8 +4940,8 @@ function excluirInad(id){
     ok:'Excluir',perigo:true},function(){_excluirInadExec(id);});
 }
 function _excluirInadExec(id){
-  var i=inadimplentes.find(function(x){return x.id===id;});
-  if(i){if(!isDataUrl(i.docRG))docDel(i.docRG);if(!isDataUrl(i.docResidencia))docDel(i.docResidencia);}
+  // Mesma regra do _deleteLoanExec: as fotos ficam. Quem apaga é a lixeira,
+  // no fim dos 30 dias ou no "apagar de vez". Ver _lixeiraApagarFotos().
   inadimplentes=inadimplentes.filter(function(x){return x.id!==id;});
   addTombstone('inadimplentes',id);
   saveInad();renderInad();updateInadBadge();
@@ -4166,9 +5075,33 @@ function renderReportBody(){
   // e o que se deixou de receber, entao aparece em indicador proprio)
   var totalDesc=filtered.reduce(function(s,l){return s+descontosPeriodo(l,rr.from,rr.to);},0)
     +fInad.reduce(function(s,i){return s+descontosPeriodo(i,rr.from,rr.to);},0);
-  var totalCapital=filtered.reduce(function(s,l){return s+loanPrincipal(l);},0)
-    +fInad.reduce(function(s,i){return s+loanPrincipal(i);},0);
-  var totalAberto=filtered.filter(function(l){return!l.paid;}).reduce(function(s,l){return s+getBalance(l);},0);
+  // C9 — CAPITAL EMPRESTADO TEM DE RESPEITAR O PERIODO ESCOLHIDO.
+  // Antes somava loanPrincipal() de cada um, que e a vida toda do emprestimo: o
+  // dono filtrava "ultimos 30 dias" e o numero nao mudava. capitalNoPeriodo()
+  // soma so os lancamentos de 'emprestimo' com data dentro da janela — dinheiro
+  // que de fato saiu do bolso no periodo — e agora recebe a lista ja filtrada.
+  // A janela do relatorio tem o fim INCLUSIVO (rr.to conta), e capitalNoPeriodo
+  // usa fim EXCLUSIVO; por isso o +1 dia.
+  var capFim=rr.to?addDays(rr.to,1):null;
+  var listaCap=filtered.concat(fInad);
+  var totalCapital=capitalNoPeriodo(rr.from,capFim,listaCap);
+  // REGISTRO ANTIGO SEM LANCAMENTO 'emprestimo'. capitalNoPeriodo so ve o
+  // historico; um registro dos primeiros tempos do app (ou vindo da nuvem) pode
+  // nao ter esse lancamento e valeria zero aqui — o dono veria o capital dele
+  // encolher sem motivo. Para esses, e SO para esses, cai no valor do cadastro,
+  // contado no dia em que o emprestimo comecou.
+  listaCap.forEach(function(l){
+    var temLanc=(l.history||[]).some(function(h){
+      return h&&(h.type==='emprestimo'||h.type==='empréstimo');});
+    if(temLanc)return;
+    if(!inRange(l.startDate,rr.from,rr.to))return;
+    totalCapital+=loanPrincipal(l);
+  });
+  // C7 — mesma correcao do painel: o inadimplente que passou pelo filtro tambem
+  // esta em aberto. Antes ele contava no capital e no juro e sumia daqui.
+  var totalAberto=filtered.filter(function(l){return!l.paid;}).reduce(function(s,l){return s+getBalance(l);},0)
+    +fInad.reduce(function(s,i){return s+getBalance(i);},0);
+  var abertoInad=_r2(fInad.reduce(function(s,i){return s+getBalance(i);},0));
   var totalJuros=filtered.reduce(function(s,l){return s+loanJuros(l);},0)
     +fInad.reduce(function(s,i){return s+loanJuros(i);},0);
   var vencidos=filtered.filter(function(l){return!l.paid&&daysUntil(l.dueDate)<0;}).length;
@@ -4185,7 +5118,17 @@ function renderReportBody(){
         +Math.round(totalDesc).toLocaleString('pt-BR')+'</span>',
         totalDesc>0?'var(--dim)':'var(--dim2)')
     +'</div>'
+    // C7 — mesma linha de aviso do painel: dizer quanto do "Em aberto" esta
+    // parado com inadimplente, para o numero nao mudar sem explicacao.
+    +(abertoInad>0.009
+      ?'<div style="font-size:11.5px;color:var(--dim2);padding:0 16px 6px;line-height:1.5">'
+       +'Em aberto inclui '+fmt(abertoInad)+' parados com '+fInad.length
+       +(fInad.length===1?' inadimplente.':' inadimplentes.')+'</div>'
+      :'')
     +'<div style="font-size:11.5px;color:var(--dim2);padding:0 16px;line-height:1.5">'
+    // C9 — deixa claro que o capital mostrado e o do periodo escolhido, nao o da
+    // vida toda: e essa a mudanca que o dono vai notar primeiro.
+    +'Capital emprestado é o dinheiro que saiu do bolso dentro do período filtrado. '
     +'Descontos concedidos no período: '+fmt(totalDesc)+' — abatidos do saldo por acordo, '
     +'não são dinheiro recebido nem entram no lucro.'
     +'</div>';
@@ -4387,9 +5330,21 @@ function doPayAll(key){
     var pay=Math.min(remaining,bal);
     remaining=parseFloat((remaining-pay).toFixed(2));
     if(pay>=bal){
+      // C4 — QUITAR PELO "PAGAR TODOS" NAO PODE APAGAR O QUE JA FOI PAGO.
+      // Antes o `loan.payments=[]` jogava fora os pagamentos parciais do periodo
+      // SEM passa-los ao historico: o dinheiro que o cliente ja tinha entregue
+      // sumia do total recebido e do lucro. E o currentAmount ficava com o valor
+      // velho, entao o saldo do cartao nao zerava depois de quitar.
+      // _histPagamentosPeriodo() e a mesma funcao que os outros caminhos de
+      // quitacao ja usavam — aqui ela so estava faltando.
+      _histPagamentosPeriodo(loan);      // move os parciais para o historico e limpa payments
       loan.paid=true;
-      loan.history.push({date:today(),type:'pagamento_total',description:'Pagamento total (pagar tudo)',value:pay,note:note});
-      loan.payments=[];
+      loan.currentAmount=0;              // sem isto o saldo nao zerava de verdade
+      // Tipo 'pagamento_final': a partir de agora existe UM so tipo de quitacao
+      // em lancamento NOVO. O antigo 'pagamento_total' continua sendo RECONHECIDO
+      // na leitura (razao e _histLabel), porque ja existem lancamentos gravados
+      // com ele e o passado nunca pode parar de ser lido.
+      loan.history.push({date:today(),type:'pagamento_final',description:'Pagamento total (pagar tudo)',value:pay,note:note});
     }else{
       loan.payments.push({id:Date.now()+'_'+loan.id,date:today(),value:pay,note:note||'Pagar tudo parcial'});
     }
@@ -4432,23 +5387,81 @@ function openBackup(){
     +'</div></div>');
 }
 // Junta todas as fotos referenciadas (IndexedDB ou base64 legado) num mapa {chave:base64}
+// D6 — agora tambem CONTA: quantas fotos eram esperadas e quantas entraram de
+// verdade. Antes as que faltavam eram omitidas em silencio e o dono guardava um
+// backup sem os documentos sem nunca saber disso.
 function collectDocs(){
-  var refs=[];
+  var refs=[],vistos={};
   loans.concat(inadimplentes||[]).forEach(function(o){
-    ['docRG','docResidencia'].forEach(function(f){if(o[f]&&!isDataUrl(o[f]))refs.push(o[f]);});
+    ['docRG','docResidencia'].forEach(function(f){
+      // T5 — TODAS as páginas entram no backup, não só a primeira.
+      // A contagem de "esperadas x incluídas" passa a contar páginas.
+      docPaginas(o[f]).forEach(function(k){
+        if(k&&!isDataUrl(k)&&!vistos[k]){vistos[k]=1;refs.push(k);}
+      });
+    });
   });
-  if(!refs.length)return Promise.resolve({});
+  if(!refs.length)return Promise.resolve({mapa:{},esperadas:0,incluidas:0,faltando:[]});
   return Promise.all(refs.map(function(k){return docGet(k).then(function(d){return{k:k,d:d};}).catch(function(){return{k:k,d:null};});}))
-    .then(function(list){var m={};list.forEach(function(x){if(x.d)m[x.k]=x.d;});return m;});
+    .then(function(list){
+      var m={},faltando=[];
+      list.forEach(function(x){if(x.d)m[x.k]=x.d;else faltando.push(x.k);});
+      return {mapa:m,esperadas:refs.length,incluidas:refs.length-faltando.length,faltando:faltando};
+    });
 }
+// Devolve {obj: <o backup em si>, fotos: <o balanco das fotos>}
 function buildBackup(){
-  return collectDocs().then(function(docs){
-    return {loans:loans,clients:clients,inadimplentes:inadimplentes,docs:docs,exportedAt:new Date().toISOString()};
+  return collectDocs().then(function(r){
+    return {
+      obj:{loans:loans,clients:clients,inadimplentes:inadimplentes,docs:r.mapa,exportedAt:new Date().toISOString()},
+      fotos:r
+    };
   });
 }
-function markBackup(){localStorage.setItem('emp_last_backup',String(Date.now()));}
-function downloadBackup(){buildBackup().then(function(obj){var data=JSON.stringify(obj,null,2);var blob=new Blob([data],{type:'application/json'});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='emprestimos-'+today()+'.json';a.click();URL.revokeObjectURL(url);markBackup();showToast('📥 Backup baixado!');});}
-function copyBackup(){buildBackup().then(function(obj){navigator.clipboard.writeText(JSON.stringify(obj)).then(function(){markBackup();showToast('📋 Copiado!');});});}
+function markBackup(){
+  try{localStorage.setItem('emp_last_backup',String(Date.now()));_marcarGravacaoOk('emp_last_backup');}
+  catch(e){_marcarGravacaoFalhou('emp_last_backup');}   // D8 — nem isto pode falhar calado
+}
+// Salva o arquivo .json no aparelho.
+function _salvarArquivoBackup(obj,nome){
+  var data=JSON.stringify(obj,null,2);
+  var blob=new Blob([data],{type:'application/json'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');a.href=url;a.download=nome;a.click();
+  URL.revokeObjectURL(url);
+}
+// D6 — pergunta ANTES de baixar quando falta foto. Quem decide e o dono.
+// cb() e chamado quando pode seguir; nada acontece se ele cancelar.
+function _avisarFotosFaltando(fotos,cb){
+  var faltam=fotos.esperadas-fotos.incluidas;
+  if(faltam<=0){cb();return;}
+  pedirConfirmacao({
+    titulo:'Faltam fotos neste backup',
+    texto:'Atenção: '+faltam+' de '+fotos.esperadas+' fotos não puderam ser incluídas '
+      +'(sem internet ou não baixadas neste aparelho). Conecte-se e refaça o backup.',
+    ok:'Baixar assim mesmo',cancelar:'Cancelar',perigo:true
+  },function(){cb();});
+}
+function downloadBackup(){
+  buildBackup().then(function(b){
+    _avisarFotosFaltando(b.fotos,function(){
+      _salvarArquivoBackup(b.obj,'emprestimos-'+today()+'.json');
+      markBackup();
+      showToast('📥 Backup baixado!');
+      if(typeof renderConta==='function'&&document.getElementById('conta-content'))renderConta();
+    });
+  });
+}
+function copyBackup(){
+  buildBackup().then(function(b){
+    _avisarFotosFaltando(b.fotos,function(){
+      navigator.clipboard.writeText(JSON.stringify(b.obj)).then(function(){
+        markBackup();showToast('📋 Copiado!');
+        if(typeof renderConta==='function'&&document.getElementById('conta-content'))renderConta();
+      });
+    });
+  });
+}
 function loadFile(e){var f=e.target.files[0];if(!f)return;var r=new FileReader();r.onload=function(ev){var el=document.getElementById('restore-input');if(el)el.value=ev.target.result;};r.readAsText(f);}
 // Marca para exclusão tudo que existe hoje no aparelho e não veio no arquivo.
 function _tombstonarAusentes(tabela,atuais,doArquivo){
@@ -4456,12 +5469,115 @@ function _tombstonarAusentes(tabela,atuais,doArquivo){
   (doArquivo||[]).forEach(function(o){if(o&&o.id)vivos[o.id]=1;});
   (atuais||[]).forEach(function(o){if(o&&o.id&&!vivos[o.id])addTombstone(tabela,o.id);});
 }
+// Lista os registros que existem hoje e NAO estao no arquivo — ou seja,
+// exatamente o que a restauracao vai apagar aqui e na nuvem.
+function _ausentesDoArquivo(atuais,doArquivo){
+  var vivos={};
+  (doArquivo||[]).forEach(function(o){if(o&&o.id)vivos[o.id]=1;});
+  return (atuais||[]).filter(function(o){return o&&o.id&&!vivos[o.id];});
+}
+// Data do arquivo em texto claro (o app ja grava exportedAt em todo backup).
+function _dataDoArquivo(iso){
+  if(!iso)return 'sem data gravada no arquivo';
+  var d=new Date(iso);
+  if(isNaN(d.getTime()))return 'sem data gravada no arquivo';
+  var txt=String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear()
+    +' às '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+  var dias=Math.floor((Date.now()-d.getTime())/86400000);
+  if(dias>0)txt+=' (há '+dias+' dia'+(dias>1?'s':'')+')';
+  return txt;
+}
+// Baixa sozinho uma copia do estado ATUAL antes de qualquer substituicao.
+// Se nem isso der certo, a restauracao nao segue: e a ultima rede de seguranca.
+function _backupAntesDeRestaurar(){
+  return buildBackup().then(function(b){
+    _salvarArquivoBackup(b.obj,'antes-de-restaurar-'+today()+'.json');
+    markBackup();
+    var faltam=b.fotos.esperadas-b.fotos.incluidas;
+    showToast(faltam>0
+      ? '💾 Cópia de segurança baixada (sem '+faltam+' foto(s)).'
+      : '💾 Cópia de segurança do estado atual baixada.');
+    return true;
+  });
+}
+// D4 — RESTAURAR DEIXOU DE SER UM BOTAO DE APAGAR TUDO.
+// Antes, restaurar um arquivo de 9 dias atras substituia tudo E marcava para
+// exclusao na nuvem todo registro que existia hoje e nao estava no arquivo:
+// 9 dias de trabalho evaporavam nos dois aparelhos, sem volta. Agora, nesta
+// ordem: (1) recusa se houver pendencia; (2) mostra o que vai ser apagado;
+// (3) baixa sozinho um backup do estado atual; (4) exige digitar RESTAURAR.
 function restoreBackup(){
   var raw=(document.getElementById('restore-input')||{}).value||'';
   if(!raw.trim()){showToast('Cole os dados primeiro','error');return;}
+  var p;
   try{
-    var p=JSON.parse(raw);
+    p=JSON.parse(raw);
     if(!Array.isArray(p.loans))throw new Error('inválido');
+  }catch(e){showToast('Arquivo inválido','error');return;}
+
+  // (1) Pendencia na fila: restaurar agora jogaria fora o que ainda nao subiu.
+  var pend=pendingCount();
+  if(pend>0){
+    pedirConfirmacao({
+      titulo:'Não dá para restaurar agora',
+      texto:'Tem '+pend+' lançamento'+(pend>1?'s':'')+' que ainda não subiu'+(pend>1?'ram':'')+' para a nuvem.\n\n'
+        +'Sincronize antes de restaurar, senão '+(pend>1?'eles se perdem':'ele se perde')+'.',
+      ok:'Sincronizar agora',cancelar:'Fechar'
+    },function(){ressincronizar();});
+    return;
+  }
+
+  // (2) O que o dono precisa ver ANTES de decidir.
+  var arqEmp=p.loans||[], arqCli=p.clients||[], arqInad=p.inadimplentes||[];
+  var somEmp=_ausentesDoArquivo(loans,arqEmp);
+  var somCli=_ausentesDoArquivo(clients,arqCli);
+  var somInad=_ausentesDoArquivo(inadimplentes,arqInad);
+  var apagar=somEmp.length+somCli.length+somInad.length;
+  var noArquivo=arqEmp.length+arqCli.length+arqInad.length;
+  var hojeTem=loans.length+clients.length+(inadimplentes||[]).length;
+
+  var msg='Data do arquivo: '+_dataDoArquivo(p.exportedAt)+'.\n'
+    +'O arquivo tem '+noArquivo+' registro'+(noArquivo===1?'':'s')+'. '
+    +'Hoje existem '+hojeTem+' neste aparelho.\n\n';
+  if(apagar>0){
+    msg+='VÃO SER APAGADOS '+apagar+' registro'+(apagar===1?'':'s')+' — aqui e na nuvem, em todos os aparelhos.';
+    // Com poucos, mostra os nomes: numero sozinho nao deixa ninguem decidir.
+    if(apagar<=10){
+      var nomes=[];
+      somEmp.concat(somInad).concat(somCli).forEach(function(o){
+        var n=(o.name||'(sem nome)');
+        if(nomes.indexOf(n)<0)nomes.push(n);
+      });
+      msg+='\n'+nomes.join(', ')+'.';
+    }
+  }else{
+    msg+='Nenhum registro será apagado: tudo que existe hoje também está no arquivo.';
+  }
+  msg+='\n\nAntes de substituir, o app vai baixar sozinho uma cópia do estado atual.';
+
+  pedirConfirmacao({titulo:'Restaurar este backup?',texto:msg,
+    ok:'Continuar',cancelar:'Cancelar',perigo:apagar>0},function(){
+    // (3) Copia de seguranca do estado atual, automatica.
+    _backupAntesDeRestaurar().then(function(){
+      // (4) Palavra digitada — folha do proprio app, nao o prompt do navegador.
+      pedirTexto({titulo:'Confirmação final',
+        texto:'Digite a palavra RESTAURAR para substituir os dados deste aparelho e da nuvem.',
+        rotulo:'Digite RESTAURAR',dica:'RESTAURAR'},function(v){
+        if(String(v||'').trim().toUpperCase()!=='RESTAURAR'){
+          showToast('Restauração cancelada — nada foi alterado.','warn');
+          return;
+        }
+        _restoreBackupExec(p);
+      });
+    }).catch(function(e){
+      if(typeof console!=='undefined'&&console.error)console.error('backup antes de restaurar',e);
+      showToast('⚠️ Não foi possível baixar a cópia de segurança. Restauração cancelada.','error');
+    });
+  });
+}
+// Aplica de verdade. So chega aqui depois dos quatro passos acima.
+function _restoreBackupExec(p){
+  try{
     // Restaurar significa "este arquivo passa a ser a verdade". O que existe
     // aqui e NAO esta no arquivo vira exclusao de verdade — sem isto, esses
     // registros sobreviviam na nuvem e voltavam na proxima sincronizacao,
@@ -4479,6 +5595,893 @@ function restoreBackup(){
       showToast('✅ '+loans.length+' empréstimos restaurados!');
     });
   }catch(e){showToast('Arquivo inválido','error');}
+}
+
+// ============================================================
+// REDE DE SEGURANÇA — cópias dentro do app, lixeira, conferência e cópia legível
+// ============================================================
+// POR QUE ISTO EXISTE. A sincronização e o backup manual já foram resolvidos.
+// O que sobrava eram duas formas de perder dinheiro que nenhum dos dois cobre:
+//   1) ERRO HUMANO — um toque errado apaga um empréstimo aqui E na nuvem, e o
+//      outro aparelho apaga junto. Não havia volta nenhuma.
+//   2) DEFEITO SILENCIOSO — uma conta que para de bater e ninguém percebe.
+// Daqui saem quatro redes: cópias completas guardadas no próprio aparelho
+// (IndexedDB), uma lixeira de 30 dias, uma conferência que só lê, e uma cópia
+// em texto que qualquer pessoa entende sem o app.
+//
+// REGRA DESTE BLOCO: nada aqui apaga dado do dono. A ÚNICA exclusão é a
+// rotação das cópias e a limpeza da lixeira vencida — ambas descritas abaixo,
+// e a cópia mais recente nunca é tocada.
+//
+// As fotos NÃO entram nas cópias: são grandes, já vivem no IndexedDB e na
+// nuvem, e o que se perde por engano é lançamento, não foto. O banco das
+// fotos (emp_docs) não é tocado por nada deste bloco.
+
+var SEG_DB_NOME='emp_copias', SEG_DB_VER=1;
+var SEG_ST_COPIAS='copias', SEG_ST_LIXO='lixeira';
+var SEG_HORAS_COPIA=20;        // idade mínima da última cópia para fazer outra
+var SEG_COPIAS_RECENTES=10;    // quantas cópias recentes ficam sempre
+var SEG_COPIAS_MESES=6;        // e a primeira de cada mês destes últimos meses
+var SEG_COPIAS_PROTEGIDAS=20;  // teto das cópias "antes de operação perigosa"
+var SEG_LIXO_DIAS=30, SEG_LIXO_MAX=200;
+
+var _segDB=null, _segIniciado=false;
+var _segCopias=[], _segLixo=[];      // caches para a tela desenhar sem esperar
+var _segUltimaConferencia='';        // texto da última conferência (botão Copiar)
+
+// ---- banco próprio (não encosta no emp_docs, que guarda as fotos) ----
+function segDB(){
+  return new Promise(function(res,rej){
+    if(_segDB)return res(_segDB);
+    if(typeof indexedDB==='undefined'||!indexedDB)return rej(new Error('sem indexedDB'));
+    var rq=indexedDB.open(SEG_DB_NOME,SEG_DB_VER);
+    rq.onupgradeneeded=function(){
+      var db=rq.result;
+      if(!db.objectStoreNames.contains(SEG_ST_COPIAS))db.createObjectStore(SEG_ST_COPIAS,{keyPath:'id'});
+      if(!db.objectStoreNames.contains(SEG_ST_LIXO))db.createObjectStore(SEG_ST_LIXO,{keyPath:'id'});
+    };
+    rq.onsuccess=function(){_segDB=rq.result;res(_segDB);};
+    rq.onerror=function(){rej(rq.error||new Error('erro ao abrir '+SEG_DB_NOME));};
+  });
+}
+function _segPut(store,obj){
+  return segDB().then(function(db){return new Promise(function(res,rej){
+    var tx=db.transaction(store,'readwrite');
+    tx.objectStore(store).put(obj);
+    tx.oncomplete=function(){res(obj);};
+    tx.onerror=function(){rej(tx.error||new Error('erro ao gravar'));};
+    tx.onabort=function(){rej(tx.error||new Error('gravação abortada'));};
+  });});
+}
+function _segGet(store,id){
+  return segDB().then(function(db){return new Promise(function(res,rej){
+    var rq=db.transaction(store,'readonly').objectStore(store).get(id);
+    rq.onsuccess=function(){res(rq.result||null);};
+    rq.onerror=function(){rej(rq.error);};
+  });});
+}
+// Cursor em vez de getAll(): getAll não existe em Android antigo.
+function _segAll(store){
+  return segDB().then(function(db){return new Promise(function(res,rej){
+    var out=[];
+    var rq=db.transaction(store,'readonly').objectStore(store).openCursor();
+    rq.onsuccess=function(){var c=rq.result;if(!c){res(out);return;}out.push(c.value);c.continue();};
+    rq.onerror=function(){rej(rq.error);};
+  });});
+}
+function _segDel(store,id){
+  return segDB().then(function(db){return new Promise(function(res,rej){
+    var tx=db.transaction(store,'readwrite');
+    tx.objectStore(store).delete(id);
+    tx.oncomplete=function(){res(true);};
+    tx.onerror=function(){rej(tx.error);};
+  });});
+}
+
+// ---- utilidades de data/texto ----
+function _segDataHora(iso){
+  var d=new Date(iso);
+  if(!iso||isNaN(d.getTime()))return 'NÃO INFORMADO';
+  return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear()
+    +' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
+function _segMs(iso){var t=Date.parse(iso||'');return isNaN(t)?0:t;}
+function _segOrdemNova(campo){
+  return function(a,b){return String(b[campo]||'').localeCompare(String(a[campo]||''));};
+}
+function _segPlural(n,um,muitos){return n+' '+(n===1?um:muitos);}
+function _repintarConta(){
+  if(typeof currentScreen!=='undefined'&&currentScreen==='conta'
+     &&typeof document!=='undefined'&&document.getElementById('conta-content'))renderConta();
+}
+
+// ============================================================
+// S1 — CÓPIAS AUTOMÁTICAS DENTRO DO APP
+// ============================================================
+// Assinatura do conteúdo. Serve para não gravar cópia igual à anterior — o
+// dono foi explícito: guardar UMA cópia e só substituir quando houver mudança.
+function _segAssinatura(){
+  var s;
+  try{s=JSON.stringify({l:loans,c:clients,i:inadimplentes||[]});}
+  catch(e){return 'sem-assinatura-'+Date.now();}
+  var h=5381;
+  for(var i=0;i<s.length;i++){h=((h<<5)+h+s.charCodeAt(i))>>>0;}
+  return 'a'+h.toString(36)+'-'+s.length;
+}
+// Grava uma cópia completa. protegida=true são as de "antes de operação
+// perigosa": elas nunca são as primeiras a sair na rotação.
+function salvarCopiaSeguranca(motivo,protegida){
+  var copia;
+  try{
+    copia={
+      id:'c'+Date.now()+'_'+Math.random().toString(36).slice(2,8),
+      versao:1,
+      feitoEm:new Date().toISOString(),
+      motivo:String(motivo||'cópia automática'),
+      protegida:!!protegida,
+      assinatura:_segAssinatura(),
+      loans:JSON.parse(JSON.stringify(loans||[])),
+      clients:JSON.parse(JSON.stringify(clients||[])),
+      inadimplentes:JSON.parse(JSON.stringify(inadimplentes||[]))
+    };
+  }catch(e){return Promise.reject(e);}
+  return _segPut(SEG_ST_COPIAS,copia).then(function(){
+    _marcarGravacaoOk('emp_copias');
+    return _rotacionarCopias().then(function(){return _recarregarCopias();}).then(function(){return copia;});
+  }).catch(function(e){
+    if(typeof console!=='undefined'&&console.error)console.error('cópia automática',e);
+    // Regra 2: nunca falhar calado. Mesmo aviso fixo do resto do app.
+    _marcarGravacaoFalhou('emp_copias');
+    throw e;
+  });
+}
+// Mês limite (YYYY-MM) do "primeira de cada mês dos últimos N meses".
+function _segMesLimite(meses){
+  var d=new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth()-(meses-1));
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+}
+// ÚNICA exclusão de cópia que existe. Fica sempre: a mais recente (sempre),
+// as 10 mais novas, a primeira de cada mês dos últimos 6 meses e as 20 mais
+// novas feitas antes de operação perigosa.
+function _rotacionarCopias(){
+  return _segAll(SEG_ST_COPIAS).then(function(lista){
+    if(lista.length<=SEG_COPIAS_RECENTES)return null;
+    lista.sort(_segOrdemNova('feitoEm'));          // mais nova primeiro
+    var manter={};
+    manter[lista[0].id]=1;                         // a mais recente NUNCA sai
+    lista.slice(0,SEG_COPIAS_RECENTES).forEach(function(c){manter[c.id]=1;});
+    var limiteMes=_segMesLimite(SEG_COPIAS_MESES), mesVisto={};
+    lista.slice().reverse().forEach(function(c){   // da mais antiga para a mais nova
+      var m=String(c.feitoEm||'').slice(0,7);
+      if(!m||m<limiteMes)return;
+      if(!mesVisto[m]){mesVisto[m]=1;manter[c.id]=1;}
+    });
+    var n=0;
+    lista.forEach(function(c){if(c.protegida&&n<SEG_COPIAS_PROTEGIDAS){manter[c.id]=1;n++;}});
+    var sobra=lista.filter(function(c){return !manter[c.id];});
+    if(!sobra.length)return null;
+    return Promise.all(sobra.map(function(c){return _segDel(SEG_ST_COPIAS,c.id).catch(function(){});}));
+  }).catch(function(e){
+    if(typeof console!=='undefined'&&console.warn)console.warn('rotação de cópias',e);
+  });
+}
+function _recarregarCopias(){
+  return _segAll(SEG_ST_COPIAS).then(function(l){
+    l.sort(_segOrdemNova('feitoEm'));
+    _segCopias=l;
+    return l;
+  }).catch(function(){_segCopias=[];return [];});
+}
+// Ao abrir o app: só grava se a última cópia tiver mais de 20 horas E o
+// conteúdo tiver mudado desde ela.
+function verificarCopiaAutomatica(){
+  return _segAll(SEG_ST_COPIAS).then(function(lista){
+    var temDado=(loans&&loans.length)||(clients&&clients.length)||(inadimplentes&&inadimplentes.length);
+    if(!temDado)return null;                       // base vazia: não há o que copiar
+    if(!lista.length)return salvarCopiaSeguranca('primeira cópia automática',false);
+    lista.sort(_segOrdemNova('feitoEm'));
+    var ult=lista[0];
+    var idade=Date.now()-_segMs(ult.feitoEm);
+    if(idade<SEG_HORAS_COPIA*3600000)return null;  // ainda é nova
+    if(ult.assinatura&&ult.assinatura===_segAssinatura())return null;  // nada mudou
+    return salvarCopiaSeguranca('cópia automática do dia',false);
+  }).catch(function(e){
+    if(typeof console!=='undefined'&&console.warn)console.warn('verificar cópia',e);
+    return null;
+  });
+}
+// Uma cópia no MESMO formato do backup manual — assim ela abre em qualquer
+// lugar que abra o .json do app. Sem fotos (o campo fica vazio de propósito).
+function _copiaParaBackup(c){
+  return {
+    loans:c.loans||[],clients:c.clients||[],inadimplentes:c.inadimplentes||[],
+    docs:{},
+    exportedAt:c.feitoEm||new Date().toISOString(),
+    origem:'cópia automática do app — '+(c.motivo||'NÃO INFORMADO')
+  };
+}
+function baixarCopiaSeguranca(id){
+  _segGet(SEG_ST_COPIAS,id).then(function(c){
+    if(!c){showToast('Cópia não encontrada','error');return;}
+    var d=new Date(c.feitoEm);
+    var nome='copia-'+(isNaN(d.getTime())?today():(d.getFullYear()+'-'
+      +String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')))+'.json';
+    _salvarArquivoBackup(_copiaParaBackup(c),nome);
+    markBackup();
+    showToast('📥 Cópia baixada!');
+    _repintarConta();
+  }).catch(function(){showToast('Não consegui ler a cópia','error');});
+}
+// RESTAURAR UMA CÓPIA PASSA PELO MESMO CAMINHO DO ARQUIVO.
+// Não existe uma segunda restauração aqui: a cópia é colocada no campo que a
+// restauração já lê e quem manda é o restoreBackup() que já está testado —
+// recusa com pendência na fila, resumo do que será apagado, backup automático
+// e a palavra RESTAURAR digitada.
+function restaurarCopiaSeguranca(id){
+  _segGet(SEG_ST_COPIAS,id).then(function(c){
+    if(!c){showToast('Cópia não encontrada','error');return;}
+    var texto=new Blob?null:null;   // (sem uso: mantido simples de propósito)
+    var el=document.createElement('textarea');
+    el.id='restore-input';
+    el.style.display='none';
+    el.value=JSON.stringify(_copiaParaBackup(c));
+    // Primeiro no documento: se a janela de backup estiver aberta, é esta que
+    // a restauração vai ler, não a caixa vazia de lá.
+    document.body.insertBefore(el,document.body.firstChild);
+    try{restoreBackup();}          // restoreBackup() lê o campo na primeira linha
+    finally{if(el.parentNode)el.parentNode.removeChild(el);}
+  }).catch(function(){showToast('Não consegui ler a cópia','error');});
+}
+
+// ============================================================
+// S3 — LIXEIRA DE 30 DIAS
+// ============================================================
+// A exclusão na nuvem continua EXATAMENTE como era (o tombstone é criado e o
+// outro aparelho apaga junto). A lixeira é uma rede local: guarda o registro
+// inteiro aqui, para o dono poder trazer de volta se o toque foi errado.
+function _segTabelaDoTipo(tipo){
+  if(tipo==='emprestimo')return 'emprestimos';
+  if(tipo==='cliente')return 'clientes';
+  // T4 — página de documento NÃO é uma linha de tabela da nuvem: ela mora
+  // dentro do empréstimo. Por isso não tem tabela e não tem tombstone.
+  if(tipo==='pagina_documento')return null;
+  return 'inadimplentes';
+}
+function _segRotuloTipo(tipo){
+  if(tipo==='emprestimo')return 'Empréstimo';
+  if(tipo==='cliente')return 'Cliente';
+  if(tipo==='pagina_documento')return 'Página de documento';
+  return 'Inadimplente';
+}
+function _segSaldoDoRegistro(tipo,reg){
+  if(tipo==='cliente')return null;             // cliente não tem saldo próprio
+  if(tipo==='pagina_documento')return null;    // foto também não
+  try{return getBalance(reg);}catch(e){return null;}
+}
+// Quando um item SAI da lixeira de vez (30 dias vencidos ou "apagar de vez"),
+// AÍ SIM as fotos dele são apagadas do aparelho e da nuvem — e mesmo assim só
+// se nenhum registro estiver mais usando aquela chave (_docApagarSeOrfa).
+// Este é o ÚNICO lugar que apaga foto de documento.
+function _lixeiraApagarFotos(item){
+  if(!item||!item.registro)return Promise.resolve();
+  if(item.tipo==='pagina_documento')
+    return _docApagarSeOrfa(item.registro.chave).catch(function(){});
+  if(item.tipo==='emprestimo'||item.tipo==='inadimplente')
+    return _docApagarPaginasDoRegistro(item.registro).catch(function(){});
+  return Promise.resolve();
+}
+function guardarNaLixeira(tipo,registro){
+  if(!registro||!registro.id)return Promise.reject(new Error('registro sem id'));
+  var item;
+  try{
+    item={
+      id:tipo+':'+registro.id+':'+Date.now(),
+      versao:1,
+      apagadoEm:new Date().toISOString(),
+      tipo:tipo,
+      registroId:registro.id,
+      nome:registro.name||'NÃO INFORMADO',
+      saldo:_segSaldoDoRegistro(tipo,registro),
+      registro:JSON.parse(JSON.stringify(registro))
+    };
+  }catch(e){return Promise.reject(e);}
+  return _segPut(SEG_ST_LIXO,item).then(function(){
+    _marcarGravacaoOk('emp_lixeira');
+    return _recarregarLixeira().then(function(){return item;});
+  }).catch(function(e){
+    if(typeof console!=='undefined'&&console.error)console.error('lixeira',e);
+    _marcarGravacaoFalhou('emp_lixeira');
+    throw e;
+  });
+}
+function _recarregarLixeira(){
+  return _segAll(SEG_ST_LIXO).then(function(l){
+    l.sort(_segOrdemNova('apagadoEm'));
+    _segLixo=l;
+    return l;
+  }).catch(function(){_segLixo=[];return [];});
+}
+function _segDiasRestantes(apagadoEm){
+  var t=_segMs(apagadoEm);
+  if(!t)return SEG_LIXO_DIAS;
+  var passou=Math.floor((Date.now()-t)/86400000);
+  var falta=SEG_LIXO_DIAS-passou;
+  return falta<0?0:falta;
+}
+// Limpeza sozinha: o que passou de 30 dias e, se ainda assim passar de 200
+// registros, os mais antigos. Só isso — nada mais apaga da lixeira sozinho.
+function _limparLixeiraVelha(){
+  return _segAll(SEG_ST_LIXO).then(function(lista){
+    var limite=Date.now()-SEG_LIXO_DIAS*86400000, apagar=[], vivos=[];
+    lista.forEach(function(it){
+      var t=_segMs(it.apagadoEm)||Date.now();
+      if(t<limite)apagar.push(it);else vivos.push(it);
+    });
+    vivos.sort(_segOrdemNova('apagadoEm'));
+    if(vivos.length>SEG_LIXO_MAX)apagar=apagar.concat(vivos.slice(SEG_LIXO_MAX));
+    if(!apagar.length)return null;
+    // O prazo venceu: agora sim a foto do item pode sair do aparelho e da nuvem.
+    return Promise.all(apagar.map(function(it){
+      return _lixeiraApagarFotos(it).then(function(){
+        return _segDel(SEG_ST_LIXO,it.id).catch(function(){});
+      });
+    }));
+  }).catch(function(e){
+    if(typeof console!=='undefined'&&console.warn)console.warn('limpeza da lixeira',e);
+  });
+}
+function restaurarDaLixeira(id){
+  _segGet(SEG_ST_LIXO,id).then(function(item){
+    if(!item||!item.registro||!item.registro.id){showToast('Registro incompleto — não dá para restaurar','error');return;}
+    pedirConfirmacao({
+      titulo:'Trazer de volta?',
+      texto:_segRotuloTipo(item.tipo)+': '+(item.nome||'NÃO INFORMADO')
+        +(item.saldo==null?'':' · saldo '+fmt(item.saldo))+'.\n\n'
+        +(item.tipo==='pagina_documento'
+          ?'A foto volta para o documento do cliente, no fim da fila de páginas.'
+          :'Ele volta para a lista com o mesmo cadastro e sobe de novo para a nuvem.'),
+      ok:'Trazer de volta'},function(){_restaurarDaLixeiraExec(item);});
+  }).catch(function(){showToast('Não consegui ler a lixeira','error');});
+}
+// O PONTO MAIS FÁCIL DE ERRAR: se o id continuar na lista de exclusões
+// (tombstones), a próxima sincronização apaga o registro de novo. Por isso
+// tiramos o id de lá ANTES de salvar — e markDirty() dentro do save() tira
+// outra vez, de propósito: é barato e fecha a porta.
+function _restaurarDaLixeiraExec(item){
+  var reg=item.registro, tipo=item.tipo, id=reg.id;
+  var tabela=_segTabelaDoTipo(tipo);
+  if(tabela)dropTombstones(tabela,[id]);   // página de documento não tem tabela
+  // T4 — PÁGINA DE DOCUMENTO. Volta a chave da foto para o FIM da lista do
+  // registro de onde ela saiu e marca o registro para subir de novo.
+  // Se o registro não existir mais, NADA é apagado: o item fica na lixeira e
+  // o dono é avisado. Foto guardada nunca some por conta do app.
+  if(tipo==='pagina_documento'){
+    var dono=allRecords().find(function(x){return x.id===reg.regId;});
+    if(!dono){showToast('O empréstimo dessa página não existe mais','error');return;}
+    var lista=docPaginas(dono[reg.campo]);
+    if(lista.indexOf(reg.chave)<0)lista.push(reg.chave);   // entra no fim
+    dono[reg.campo]=docGuardarPaginas(lista);
+    _docGravarRegistro(dono);
+    _segDel(SEG_ST_LIXO,item.id).catch(function(){});
+    renderAll();
+    _recarregarLixeira().then(function(){_repintarConta();});
+    showToast('✅ Página de volta no documento');
+    return;
+  }
+  if(tipo==='emprestimo'){
+    if(!loans.some(function(l){return l.id===id;}))loans.push(reg);
+    migrateLoans(loans);
+    save(id);                     // marca pendente para subir de novo
+  }else if(tipo==='cliente'){
+    if(!clients.some(function(c){return c.id===id;}))clients.push(reg);
+    markDirty('clientes',[id]);   // save() só marca cliente que ele mesmo mexeu
+    save(null);
+  }else{
+    if(!inadimplentes)inadimplentes=[];
+    if(!inadimplentes.some(function(x){return x.id===id;}))inadimplentes.push(reg);
+    saveInad(id);
+  }
+  _segDel(SEG_ST_LIXO,item.id).catch(function(){});
+  renderAll();
+  updateInadBadge();
+  _recarregarLixeira().then(function(){_repintarConta();});
+  showToast('✅ '+_segRotuloTipo(tipo)+' de volta na lista');
+}
+function apagarDaLixeira(id){
+  _segGet(SEG_ST_LIXO,id).then(function(item){
+    if(!item){showToast('Item não encontrado','error');return;}
+    pedirConfirmacao({
+      titulo:'Apagar de vez?',
+      texto:_segRotuloTipo(item.tipo)+': '+(item.nome||'NÃO INFORMADO')+'.\n\n'
+        +'Sai da lixeira e não tem mais volta por aqui. A cópia automática feita '
+        +'na hora da exclusão continua guardada.'
+        +(item.tipo==='pagina_documento'
+          ?'\n\n⚠️ A FOTO é apagada do aparelho e da nuvem agora. Foto não entra na cópia automática.'
+          :''),
+      ok:'Apagar de vez',perigo:true},function(){
+      // SÓ AQUI a foto é apagada de verdade — depois que o dono mandou.
+      _lixeiraApagarFotos(item).then(function(){
+        return _segDel(SEG_ST_LIXO,id);
+      }).then(function(){
+        return _recarregarLixeira();
+      }).then(function(){
+        _repintarConta();
+        showToast('Removido da lixeira');
+      }).catch(function(){showToast('Não consegui apagar','error');});
+    });
+  }).catch(function(){showToast('Não consegui ler a lixeira','error');});
+}
+
+// ============================================================
+// S2 — CÓPIA ANTES DE TODA OPERAÇÃO PERIGOSA
+// ============================================================
+// Guarda a cópia (e o registro na lixeira, quando é exclusão) e SÓ ENTÃO
+// deixa a operação seguir. Se a gravação falhar, o dono é avisado e decide —
+// nunca acontece em silêncio.
+function _redeAntesDeOperacao(motivo,seguir){
+  salvarCopiaSeguranca(motivo,true).then(function(){
+    _repintarConta();
+    seguir();
+  },function(){
+    pedirConfirmacao({
+      titulo:'Não consegui guardar a cópia',
+      texto:'A cópia de segurança não pôde ser gravada neste aparelho (sem espaço, '
+        +'ou o navegador bloqueou). Se você continuar, não haverá como voltar atrás por aqui.',
+      ok:'Continuar mesmo assim',cancelar:'Cancelar',perigo:true},function(){seguir();});
+  });
+}
+function _redeAntesDeApagar(motivo,tipo,registro,seguir){
+  var passos=[salvarCopiaSeguranca(motivo,true)];
+  if(registro&&registro.id)passos.push(guardarNaLixeira(tipo,registro));
+  Promise.all(passos.map(function(p){
+    return p.then(function(){return true;},function(){return false;});
+  })).then(function(res){
+    var falhou=res.indexOf(false)>=0;
+    if(!falhou){
+      _repintarConta();
+      seguir();
+      return;
+    }
+    pedirConfirmacao({
+      titulo:'Não consegui guardar a cópia',
+      texto:'A cópia de segurança e/ou a lixeira não puderam ser gravadas neste aparelho. '
+        +'Se você continuar, este registro não terá volta.',
+      ok:'Excluir mesmo assim',cancelar:'Cancelar',perigo:true},function(){seguir();});
+  });
+}
+// Embrulha um executor que já existe e está testado, sem alterar uma linha
+// dele: a rede roda antes, o original roda igual ao que sempre rodou.
+function _segEnvolver(nome,antes){
+  var original=(typeof window!=='undefined')?window[nome]:null;
+  if(typeof original!=='function')return;
+  window[nome]=function(){
+    var args=arguments, eu=this;
+    var seguir=function(){original.apply(eu,args);};
+    try{antes(args,seguir);}
+    catch(e){
+      if(typeof console!=='undefined'&&console.error)console.error('rede de segurança',e);
+      seguir();          // a rede nunca pode impedir o app de funcionar
+    }
+  };
+}
+_segEnvolver('_deleteLoanExec',function(args,seguir){
+  var l=loans.find(function(x){return x.id===args[0];});
+  _redeAntesDeApagar('antes de excluir o empréstimo de '+((l&&l.name)||'NÃO INFORMADO'),
+    'emprestimo',l,seguir);
+});
+_segEnvolver('_excluirInadExec',function(args,seguir){
+  var i=(inadimplentes||[]).find(function(x){return x.id===args[0];});
+  _redeAntesDeApagar('antes de excluir o inadimplente '+((i&&i.name)||'NÃO INFORMADO'),
+    'inadimplente',i,seguir);
+});
+_segEnvolver('_removeClientExec',function(args,seguir){
+  var c=clients[args[0]];
+  _redeAntesDeApagar('antes de excluir o cliente '+((c&&c.name)||'NÃO INFORMADO'),
+    'cliente',c,seguir);
+});
+_segEnvolver('_moveClientToInadExec',function(args,seguir){
+  var k=args[0];
+  var alvo=loans.filter(function(l){return clientKey(l.name)===k&&!l.paid;})[0];
+  _redeAntesDeOperacao('antes de mover '+((alvo&&alvo.name)||'NÃO INFORMADO')
+    +' inteiro para inadimplentes',seguir);
+});
+_segEnvolver('_restoreBackupExec',function(args,seguir){
+  _redeAntesDeOperacao('antes de restaurar um backup ou uma cópia',seguir);
+});
+
+// ============================================================
+// S4 — CONFERIR CONTAS (só lê; não altera nada, nunca)
+// ============================================================
+// Nenhuma linha daqui grava, marca ou recalcula nada gravado. ledger() e
+// getBalance() são chamados só para comparar — é exatamente o alarme principal:
+// se esses dois discordarem, o dinheiro na tela não é o dinheiro do extrato.
+function conferirContas(){
+  var probs=[], hoje=today(), vistos={};
+  function nome(o){return (o&&o.name)?o.name:'NÃO INFORMADO';}
+  function add(g,t){probs.push({grupo:g,texto:t});}
+  var todos=(loans||[]).concat(inadimplentes||[]);
+
+  todos.forEach(function(o){
+    if(!o){return;}
+    if(!o.id){add('Registro sem identificação interna',nome(o)+' não tem id — não sincroniza direito.');return;}
+    if(vistos[o.id])add('Dois registros com o mesmo id',nome(o)+' — o id '+o.id+' aparece mais de uma vez.');
+    vistos[o.id]=1;
+  });
+
+  todos.forEach(function(o){
+    if(!o)return;
+    var lg,gb;
+    try{lg=ledger(o);}catch(e){add('Não consegui ler o extrato',nome(o)+': '+((e&&e.message)||'erro'));return;}
+    try{gb=getBalance(o);}catch(e){add('Não consegui ler o saldo',nome(o));return;}
+    var dif=Math.abs((lg.saldo||0)-(gb||0));
+    if(dif>0.01)add('Saldo do extrato não bate com o saldo do cartão',
+      nome(o)+': o extrato fecha em '+fmt(lg.saldo)+' e o cartão mostra '+fmt(gb)
+      +' — diferença de '+fmt(dif)+'.');
+    if(!(o.history||[]).length&&!(o.payments||[]).length)
+      add('Registro sem nenhum lançamento',nome(o)+' não tem nada no histórico — não dá para saber de onde veio o valor.');
+    if((gb||0)<-0.004)add('Saldo negativo',nome(o)+': saldo '+fmt(gb)+'.');
+    if((parseFloat(o.currentAmount)||0)<-0.004)
+      add('Saldo negativo',nome(o)+': o valor guardado no cadastro está negativo ('+fmt(o.currentAmount)+').');
+    (o.history||[]).forEach(function(h){
+      if(h&&h.date&&h.date>hoje)add('Lançamento com data no futuro',
+        nome(o)+': lançamento de '+fmt(h.value||0)+' marcado em '+fmtDate(h.date)+'.');
+    });
+    (o.payments||[]).forEach(function(p){
+      if(p&&p.date&&p.date>hoje)add('Pagamento com data no futuro',
+        nome(o)+': pagamento de '+fmt(p.value||0)+' marcado em '+fmtDate(p.date)+'.');
+    });
+  });
+
+  var chaves={};
+  (clients||[]).forEach(function(c){chaves[clientKey(c.name)]=1;});
+  (loans||[]).forEach(function(l){
+    if(!chaves[clientKey(l.name)])add('Empréstimo sem cliente na lista',
+      nome(l)+' tem empréstimo, mas não está mais na lista de clientes.');
+    if(l.paid&&Math.abs(getBalance(l))>0.01)add('Marcado como quitado, mas com saldo',
+      nome(l)+': está quitado e ainda mostra '+fmt(getBalance(l))+'.');
+  });
+
+  // Indicadores da tela contra a soma feita registro a registro.
+  try{
+    var s=calcStats();
+    var emAberto=(loans||[]).filter(function(l){return !l.paid;}).concat(inadimplentes||[]);
+    var somaSaldo=_r2(emAberto.reduce(function(a,l){return a+getBalance(l);},0));
+    if(Math.abs(_r2(s.totalOwed)-somaSaldo)>0.01)
+      add('Indicador da tela não bate com a soma um a um',
+        '"A receber" mostra '+fmt(s.totalOwed)+' e somando registro a registro dá '+fmt(somaSaldo)+'.');
+    var somaRisco=_r2(emAberto.reduce(function(a,l){return a+ledger(l).emRisco;},0));
+    if(Math.abs(_r2(s.emRisco)-somaRisco)>0.01)
+      add('Indicador da tela não bate com a soma um a um',
+        '"Dinheiro em risco" mostra '+fmt(s.emRisco)+' e somando registro a registro dá '+fmt(somaRisco)+'.');
+    var somaInad=_r2((inadimplentes||[]).reduce(function(a,i){return a+getBalance(i);},0));
+    if(Math.abs(_r2(s.inadAberto)-somaInad)>0.01)
+      add('Indicador da tela não bate com a soma um a um',
+        'O total parado com inadimplentes mostra '+fmt(s.inadAberto)+' e a soma um a um dá '+fmt(somaInad)+'.');
+  }catch(e){
+    add('Não consegui conferir os indicadores da tela',((e&&e.message)||'erro'));
+  }
+
+  return {
+    problemas:probs,
+    emprestimos:(loans||[]).length,
+    clientes:(clients||[]).length,
+    inadimplentes:(inadimplentes||[]).length
+  };
+}
+// Texto em linguagem comum — é o mesmo que vai para a área de transferência.
+function _conferenciaTexto(r){
+  var t='CONFERÊNCIA DE CONTAS — '+_segDataHora(new Date().toISOString())+'\n';
+  t+=_segPlural(r.emprestimos,'empréstimo','empréstimos')+', '
+    +_segPlural(r.clientes,'cliente','clientes')+', '
+    +_segPlural(r.inadimplentes,'inadimplente','inadimplentes')+'.\n\n';
+  if(!r.problemas.length){
+    t+='Tudo conferido, nenhum problema encontrado.\n';
+    return t;
+  }
+  t+='Encontrei '+_segPlural(r.problemas.length,'coisa fora do lugar','coisas fora do lugar')+':\n\n';
+  var grupos=[], porGrupo={};
+  r.problemas.forEach(function(p){
+    if(!porGrupo[p.grupo]){porGrupo[p.grupo]=[];grupos.push(p.grupo);}
+    porGrupo[p.grupo].push(p.texto);
+  });
+  grupos.forEach(function(g){
+    t+=g.toUpperCase()+' ('+porGrupo[g].length+')\n';
+    porGrupo[g].forEach(function(x){t+='  - '+x+'\n';});
+    t+='\n';
+  });
+  return t;
+}
+function abrirConferencia(){
+  var r;
+  try{r=conferirContas();}
+  catch(e){showToast('Não consegui conferir agora','error');return;}
+  _segUltimaConferencia=_conferenciaTexto(r);
+  var cab=_segPlural(r.emprestimos,'empréstimo','empréstimos')+' · '
+    +_segPlural(r.clientes,'cliente','clientes')+' · '
+    +_segPlural(r.inadimplentes,'inadimplente','inadimplentes');
+  var corpo;
+  if(!r.problemas.length){
+    corpo='<div style="border:1px solid var(--gr);background:var(--grS);border-radius:11px;padding:13px 14px">'
+      +'<div style="font-size:15px;font-weight:700;color:var(--gr)">Tudo conferido, nenhum problema</div>'
+      +'<div style="font-size:12.5px;color:var(--dim);margin-top:4px">'+esc(cab)+'</div></div>';
+  }else{
+    var grupos=[], porGrupo={};
+    r.problemas.forEach(function(p){
+      if(!porGrupo[p.grupo]){porGrupo[p.grupo]=[];grupos.push(p.grupo);}
+      porGrupo[p.grupo].push(p.texto);
+    });
+    corpo='<div style="border:1px solid var(--am);background:var(--amS);border-radius:11px;padding:12px 13px;margin-bottom:11px">'
+      +'<div style="font-size:14.5px;font-weight:700;color:var(--am)">'
+      +esc('Encontrei '+_segPlural(r.problemas.length,'coisa fora do lugar','coisas fora do lugar'))+'</div>'
+      +'<div style="font-size:12.5px;color:var(--dim);margin-top:4px">'+esc(cab)+'</div></div>';
+    corpo+=grupos.map(function(g){
+      return '<div style="margin-bottom:12px">'
+        +'<div style="font-size:13.5px;font-weight:700;margin-bottom:5px">'+esc(g)+' ('+porGrupo[g].length+')</div>'
+        +porGrupo[g].map(function(x){
+          return '<div style="font-size:12.5px;color:var(--dim);line-height:1.55;padding:5px 0 5px 10px;'
+            +'border-left:2px solid var(--ln2)">'+esc(x)+'</div>';
+        }).join('')
+        +'</div>';
+    }).join('');
+  }
+  modal('<div class="modal-header"><span class="modal-title">Conferir contas</span>'
+    +'<button class="modal-close" onclick="closeModal()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--dim2);line-height:1.5;margin-bottom:11px">'
+    +'Esta tela só lê. Nada foi alterado.</div>'
+    +corpo
+    +'<div class="modal-actions"><button class="btn-secondary" onclick="copiarConferencia()">Copiar</button>'
+    +'<button class="btn-primary" onclick="closeModal()">Fechar</button></div>');
+}
+function copiarConferencia(){
+  var t=_segUltimaConferencia||'';
+  if(!t){showToast('Nada para copiar','warn');return;}
+  try{
+    navigator.clipboard.writeText(t).then(function(){showToast('📋 Resultado copiado!');},
+      function(){showToast('Não consegui copiar neste aparelho','error');});
+  }catch(e){showToast('Não consegui copiar neste aparelho','error');}
+}
+
+// ============================================================
+// S5 — CÓPIA LEGÍVEL EM .TXT
+// ============================================================
+// O .json é seguro e ilegível; o CSV é um resumo filtrado sem histórico.
+// Este arquivo é o oposto: abre no Bloco de Notas e qualquer pessoa entende,
+// com o extrato lançamento a lançamento e o saldo em cada linha.
+function _txtRepete(car,n){var s='';for(var i=0;i<n;i++)s+=car;return s;}
+function _txtEsq(v,n){var s=String(v);if(s.length>n)return s.slice(0,n);while(s.length<n)s+=' ';return s;}
+function _txtDir(v,n){var s=String(v);if(s.length>n)s=s.slice(s.length-n);while(s.length<n)s=' '+s;return s;}
+// Número sem "R$" para as colunas ficarem alinhadas. Espaço fino do formato
+// pt-BR vira espaço comum: o Bloco de Notas antigo não desenha o outro.
+function _txtNum(v){
+  var s;
+  try{s=new Intl.NumberFormat('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}).format(v||0);}
+  catch(e){s=String(Math.round((v||0)*100)/100);}
+  return s.replace(/ /g,' ');
+}
+function _txtDinheiro(v){return 'R$ '+_txtNum(v);}
+function _txtRegistroBloco(o,rotulo,ordem,total){
+  var lg=ledger(o), gb=getBalance(o);
+  var L=[];
+  L.push('  '+rotulo+' '+ordem+' de '+total+(o.paid?'   [QUITADO]':'   [EM ABERTO]'));
+  L.push('  Início: '+(o.startDate?fmtDate(o.startDate):'NÃO INFORMADO')
+    +'   Vencimento: '+(o.dueDate?fmtDate(o.dueDate):'NÃO INFORMADO')
+    +'   Taxa: '+(o.interest==null||o.interest===''?'NÃO INFORMADO':(o.interest+'%')));
+  L.push('  Capital emprestado: '+_txtDinheiro(lg.capitalEmprestado));
+  L.push('  Saldo hoje: '+_txtDinheiro(gb));
+  if(o.motivo)L.push('  Motivo da inadimplência: '+o.motivo);
+  if(o.note)L.push('  Observação: '+o.note);
+  L.push('');
+  L.push('  EXTRATO (lançamento a lançamento)');
+  L.push('  '+_txtEsq('DATA',11)+_txtEsq('LANÇAMENTO',30)+_txtDir('VALOR',13)+_txtDir('SALDO',14));
+  if(!lg.linhas.length){
+    L.push('  (nenhuma movimentação registrada)');
+  }else{
+    lg.linhas.forEach(function(li){
+      var val=li.sinal?(li.sinal+' '+_txtNum(li.valor)):'—';
+      var rot=li.rotulo||'Lançamento';
+      if(li.estornado)rot+=' (estornado)';
+      L.push('  '+_txtEsq(li.data?fmtDate(li.data):'NÃO INFORM.',11)
+        +_txtEsq(rot,30)+_txtDir(val,13)+_txtDir(_txtNum(li.saldoDepois),14));
+      if(li.tipo&&li.tipo.indexOf('pagamento')>=0)
+        L.push('  '+_txtEsq('',11)+'   '+_txtNum(li.parteJuros)+' de juro e '
+          +_txtNum(li.parteCapital)+' abatendo a dívida');
+      if(li.nota)L.push('  '+_txtEsq('',11)+'   obs: '+li.nota);
+    });
+  }
+  L.push('');
+  L.push('  TOTAIS DESTE '+rotulo.toUpperCase());
+  L.push('    Emprestei ....: '+_txtDinheiro(lg.capitalEmprestado));
+  L.push('    Recebi .......: '+_txtDinheiro(lg.recebidoTotal));
+  L.push('    Juro ganho ...: '+_txtDinheiro(lg.jurosRecebido));
+  L.push('    Desconto dado : '+_txtDinheiro(lg.descontoTotal));
+  L.push('    Saldo hoje ...: '+_txtDinheiro(gb));
+  L.push('');
+  return L.join('\n');
+}
+function montarTextoLegivel(){
+  var linha=_txtRepete('=',70), meia=_txtRepete('-',70);
+  var L=[];
+  L.push(linha);
+  L.push('CÓPIA LEGÍVEL — CONTROLE DE EMPRÉSTIMOS');
+  L.push('versao: 1');
+  L.push('Gerada em: '+_segDataHora(new Date().toISOString()));
+  L.push(linha);
+  L.push('Este arquivo é para LER e conferir. Para restaurar o app, use o');
+  L.push('backup .json ou uma das cópias automáticas da aba Conta.');
+  L.push('');
+
+  var s=null;
+  try{s=calcStats();}catch(e){s=null;}
+  var ativos=(loans||[]).filter(function(l){return !l.paid;}).length;
+  var quitados=(loans||[]).length-ativos;
+  L.push('RESUMO GERAL');
+  L.push('  Empréstimos ........: '+(loans||[]).length+'  ('+ativos+' em aberto, '+quitados+' quitados)');
+  L.push('  Clientes ...........: '+(clients||[]).length);
+  L.push('  Inadimplentes ......: '+(inadimplentes||[]).length);
+  L.push('  A receber ..........: '+(s?_txtDinheiro(s.totalOwed):'NÃO INFORMADO'));
+  L.push('  Vencido ............: '+(s?_txtDinheiro(s.totalOverdue):'NÃO INFORMADO'));
+  L.push('  Dinheiro em risco ..: '+(s?_txtDinheiro(s.emRisco):'NÃO INFORMADO'));
+  L.push('  Juro recebido (vida): '+(s?_txtDinheiro(s.juros):'NÃO INFORMADO'));
+  L.push('');
+
+  // Um bloco por cliente: os empréstimos dele e, junto, o que virou inadimplente.
+  var chaves=[], porChave={};
+  function pega(k,nomeVis,fonte){
+    if(!porChave[k]){porChave[k]={nome:nomeVis,emprestimos:[],inadimplentes:[],cad:null};chaves.push(k);}
+    if(fonte)porChave[k][fonte].push(arguments[3]);
+    return porChave[k];
+  }
+  (loans||[]).forEach(function(l){pega(clientKey(l.name),l.name||'NÃO INFORMADO','emprestimos',l);});
+  (inadimplentes||[]).forEach(function(i){pega(clientKey(i.name),i.name||'NÃO INFORMADO','inadimplentes',i);});
+  (clients||[]).forEach(function(c){
+    var g=pega(clientKey(c.name),c.name||'NÃO INFORMADO',null);
+    g.cad=c;
+  });
+  chaves.sort(function(a,b){return porChave[a].nome.localeCompare(porChave[b].nome,'pt-BR');});
+
+  chaves.forEach(function(k){
+    var g=porChave[k];
+    var qualquer=g.emprestimos[0]||g.inadimplentes[0]||g.cad||{};
+    var tel=(g.cad&&g.cad.phone)||qualquer.phone||'';
+    var end=(g.cad&&g.cad.address)||qualquer.address||'';
+    L.push(meia);
+    L.push('CLIENTE: '+(g.nome||'NÃO INFORMADO'));
+    L.push('Telefone: '+(tel||'NÃO INFORMADO'));
+    L.push('Endereço: '+(end||'NÃO INFORMADO'));
+    var saldoCli=0;
+    g.emprestimos.concat(g.inadimplentes).forEach(function(o){saldoCli+=getBalance(o);});
+    L.push('Saldo em aberto deste cliente: '+_txtDinheiro(_r2(saldoCli)));
+    L.push(meia);
+    L.push('');
+    if(!g.emprestimos.length&&!g.inadimplentes.length){
+      L.push('  (sem empréstimos registrados)');
+      L.push('');
+      return;
+    }
+    g.emprestimos.forEach(function(o,idx){
+      L.push(_txtRegistroBloco(o,'Empréstimo',idx+1,g.emprestimos.length));
+    });
+    g.inadimplentes.forEach(function(o,idx){
+      L.push(_txtRegistroBloco(o,'Inadimplente',idx+1,g.inadimplentes.length));
+    });
+  });
+
+  L.push(linha);
+  L.push('FIM DA CÓPIA — '+chaves.length+' cliente(s), '
+    +(loans||[]).length+' empréstimo(s), '+(inadimplentes||[]).length+' inadimplente(s).');
+  L.push(linha);
+  return L.join('\n');
+}
+function baixarCopiaLegivel(){
+  var txt;
+  try{txt=montarTextoLegivel();}
+  catch(e){
+    if(typeof console!=='undefined'&&console.error)console.error('cópia legível',e);
+    showToast('Não consegui montar a cópia legível','error');
+    return;
+  }
+  try{
+    var blob=new Blob([txt],{type:'text/plain;charset=utf-8'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    a.href=url;a.download='emprestimos-legivel-'+today()+'.txt';a.click();
+    URL.revokeObjectURL(url);
+    // De propósito NÃO conta como backup: este arquivo não restaura nada, e
+    // marcá-lo desligaria o lembrete de fazer o backup que restaura.
+    showToast('📄 Cópia legível baixada!');
+  }catch(e){showToast('Não consegui salvar o arquivo','error');}
+}
+
+// ============================================================
+// BLOCOS DA TELA CONTA
+// ============================================================
+function _linhaSegHtml(titulo,sub,extra,botoes,ultima){
+  return '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;'
+    +(ultima?'':'border-bottom:1px solid var(--ln);')+'">'
+    +'<div style="flex:1 1 145px;min-width:0">'
+    +'<div style="font-size:13.5px;font-weight:600">'+titulo+'</div>'
+    +'<div style="font-size:11.5px;color:var(--dim);line-height:1.45">'+sub+'</div>'
+    +(extra?'<div style="font-size:11.5px;color:var(--dim2);line-height:1.45">'+extra+'</div>':'')
+    +'</div>'
+    +'<div style="display:flex;gap:6px;flex:none">'+botoes+'</div>'
+    +'</div>';
+}
+function _blocoCopiasHtml(){
+  var lista=_segCopias||[];
+  var h='<div class="sec"><span class="sec-t">Cópias automáticas ('+lista.length+')</span></div>';
+  if(!lista.length){
+    return h+'<div style="margin:0 16px;font-size:12px;color:var(--dim);line-height:1.55">'
+      +'Ainda não há cópia guardada dentro do app. Ela é feita sozinha ao abrir, quando a última '
+      +'tiver mais de '+SEG_HORAS_COPIA+' horas e algo tiver mudado — e sempre antes de excluir ou restaurar.</div>';
+  }
+  h+='<div class="bloco">'+lista.map(function(c,i){
+    var sub=_segPlural((c.loans||[]).length,'empréstimo','empréstimos')+' · '
+      +_segPlural((c.clients||[]).length,'cliente','clientes')+' · '
+      +_segPlural((c.inadimplentes||[]).length,'inadimplente','inadimplentes');
+    return _linhaSegHtml(esc(_segDataHora(c.feitoEm)),esc(sub),esc(c.motivo||'NÃO INFORMADO'),
+      '<button class="abtn" onclick="baixarCopiaSeguranca(\''+_js(c.id)+'\')">Baixar</button>'
+      +'<button class="abtn" onclick="restaurarCopiaSeguranca(\''+_js(c.id)+'\')">Restaurar</button>',
+      i===lista.length-1);
+  }).join('')+'</div>';
+  h+='<div style="margin:9px 16px 0;font-size:12px;color:var(--dim);line-height:1.55">'
+    +'Guardadas dentro do aparelho, sem precisar de internet. Entram empréstimos, clientes e '
+    +'inadimplentes; as fotos ficam guardadas à parte e não são apagadas. '
+    +'<b style="color:var(--tx)">Baixar</b> gera o mesmo arquivo do backup, para você guardar fora do celular. '
+    +'<b style="color:var(--tx)">Restaurar</b> passa pelas mesmas travas do backup.</div>';
+  return h;
+}
+function _blocoLixeiraHtml(){
+  var lista=_segLixo||[];
+  var h='<div class="sec"><span class="sec-t">Lixeira ('+lista.length+')</span></div>';
+  if(!lista.length){
+    return h+'<div style="margin:0 16px;font-size:12px;color:var(--dim);line-height:1.55">'
+      +'Vazia. Tudo que você excluir fica guardado aqui por '+SEG_LIXO_DIAS+' dias e pode voltar.</div>';
+  }
+  h+='<div class="bloco">'+lista.map(function(it,i){
+    var dias=_segDiasRestantes(it.apagadoEm);
+    var sub=_segRotuloTipo(it.tipo)+' · apagado em '+_segDataHora(it.apagadoEm)
+      +(it.saldo==null?'':' · saldo era '+fmt(it.saldo));
+    var extra=(dias<=0?'some hoje':'some em '+_segPlural(dias,'dia','dias'));
+    return _linhaSegHtml(esc(it.nome||'NÃO INFORMADO'),esc(sub),esc(extra),
+      '<button class="abtn" onclick="restaurarDaLixeira(\''+_js(it.id)+'\')">Restaurar</button>'
+      +'<button class="abtn" style="color:var(--rd);border-color:var(--rd)" '
+      +'onclick="apagarDaLixeira(\''+_js(it.id)+'\')">Apagar de vez</button>',
+      i===lista.length-1);
+  }).join('')+'</div>';
+  h+='<div style="margin:9px 16px 0;font-size:12px;color:var(--dim);line-height:1.55">'
+    +'Quem volta da lixeira volta com o mesmo cadastro e sobe de novo para a nuvem.</div>';
+  return h;
+}
+function _blocoConferirHtml(){
+  return '<div class="sec"><span class="sec-t">Conferência e cópia legível</span></div>'
+    +'<div style="display:flex;flex-direction:column;gap:8px;margin:0 14px">'
+    +'<button class="btn btn-gh" onclick="abrirConferencia()">'+sv(I.check,17)+'Conferir contas</button>'
+    +'<button class="btn btn-gh" onclick="baixarCopiaLegivel()">'+sv(I.doc,17)+'Baixar cópia legível (.txt)</button>'
+    +'</div>'
+    +'<div style="margin:9px 16px 0;font-size:12px;color:var(--dim);line-height:1.55">'
+    +'<b style="color:var(--tx)">Conferir contas</b> passa por todos os registros e mostra o que estiver '
+    +'estranho. Ele só lê — não muda nada. '
+    +'<b style="color:var(--tx)">Cópia legível</b> é um texto para abrir no Bloco de Notas, com o extrato '
+    +'de cada empréstimo; serve para ler e conferir, não para restaurar.</div>';
+}
+function _blocoRedeSegurancaHtml(){
+  return _blocoCopiasHtml()+_blocoLixeiraHtml()+_blocoConferirHtml();
+}
+// Liga a rede quando o app abre: limpa lixeira vencida, decide se faz a cópia
+// do dia e carrega as duas listas para a tela Conta desenhar sem esperar.
+function _iniciarRedeSeguranca(){
+  if(_segIniciado)return;
+  _segIniciado=true;
+  _limparLixeiraVelha()
+    .then(function(){return verificarCopiaAutomatica();})
+    .then(function(){return _recarregarCopias();})
+    .then(function(){return _recarregarLixeira();})
+    .then(function(){_repintarConta();})
+    .catch(function(e){
+      if(typeof console!=='undefined'&&console.warn)console.warn('rede de segurança',e);
+    });
 }
 
 // ============================================================
