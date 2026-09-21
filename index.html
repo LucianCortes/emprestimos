@@ -1949,6 +1949,20 @@ function _ledgerCalc(loan){
       capitalEmprestado=R(capitalEmprestado+capAj);
       saldo=R(saldo+V);
       linha.rotulo='Ajuste';linha.sinal='';
+    }else if(t==='congelamento'||t==='descongelamento'){
+      // M2 (20/09/2026) — MARCO DE JURO CONGELADO / DESCONGELADO.
+      // Estes dois tipos NAO SAO DINHEIRO. Eles so registram o dia em que o
+      // dono mandou parar o juro daquele inadimplente e o dia em que mandou
+      // voltar. Por isso nao tocam em saldo, capital, juro pendente, juro
+      // recebido, recebido total nem desconto — nenhuma linha de calculo
+      // acima foi alterada para isto.
+      // Aparecem no extrato so para o dono enxergar quando parou e quando
+      // voltou. Com isto a REGRA DE OURO (ledger.saldo == getBalance) continua
+      // valendo num inadimplente congelado: se estes tipos caissem no "tipo
+      // desconhecido" mais abaixo o resultado seria o mesmo, mas ficariam
+      // rotulados como "Outro lancamento" e o dono nao entenderia a linha.
+      linha.rotulo=(t==='congelamento')?'Juro congelado':'Juro voltou a correr';
+      linha.sinal='';
     }else{
       // Tipo desconhecido: não mexe em nada, mas aparece no extrato para não
       // sumir da vista do dono.
@@ -2221,7 +2235,42 @@ function clientEvents(ls,from,to){var ev=[];ls.forEach(function(l){(l.history||[
 // vencimento que esta sendo rolado), nao em today(). Ver o comentario longo em
 // accrueParcelas: e a mesma regra e o mesmo motivo. `lastAccrual` continua sendo
 // today(), porque ele responde outra pergunta — "quando o app rodou esta conta".
-function accrueInadimplentes(){var changed=false,tocados=[];(inadimplentes||[]).forEach(function(i){if(i.interest==null||!i.dueDate)return;var guard=0;while(daysUntil(i.dueDate)<0&&guard<600){var before=parseFloat(i.currentAmount)||0;var juros=parseFloat((before*(i.interest/100)).toFixed(2));var venc=i.dueDate;i.currentAmount=parseFloat((before+juros).toFixed(2));i.dueDate=addDays(i.dueDate,CONFIG.CICLO_DIAS);i.history=i.history||[];i.history.push({date:venc,type:'renovacao',value:before,rate:i.interest,note:'Juros de inadimplencia '+i.interest+'%: +'+fmt(juros)+'. Novo saldo: '+fmt(i.currentAmount)});i.lastAccrual=today();changed=true;if(tocados.indexOf(i.id)<0)tocados.push(i.id);guard++;}});if(changed)saveInad(tocados);return changed;}
+//
+// M2 (20/09/2026) — JURO CONGELADO, CLIENTE A CLIENTE.
+// A regra geral nao mudou: juro de inadimplente corre sem teto. O que mudou e
+// que o dono pode mandar PARAR o juro de UM inadimplente, e depois mandar
+// voltar. Quem estiver congelado e pulado aqui embaixo.
+//
+// SEM COLUNA NOVA NO BANCO: o marco fica no proprio `history`, que ja e uma
+// coluna json e ja sincroniza. Dois tipos: 'congelamento' e 'descongelamento'.
+// Nada e apagado do historico — cada congelar/descongelar acrescenta uma linha.
+function inadCongelado(i){
+  var h=(i&&i.history)||[],ult=null;
+  for(var k=0;k<h.length;k++){
+    if(!h[k])continue;
+    var t=h[k].type;
+    if(t==='congelamento'||t==='descongelamento')ult=h[k];
+  }
+  // Sem nenhum dos dois na ficha, nao esta congelado.
+  return !!(ult&&ult.type==='congelamento');
+}
+// Data do congelamento que esta valendo (para o selo da lista). '' se nao estiver.
+function inadCongeladoDesde(i){
+  var h=(i&&i.history)||[],ult=null;
+  for(var k=0;k<h.length;k++){
+    if(!h[k])continue;
+    var t=h[k].type;
+    if(t==='congelamento'||t==='descongelamento')ult=h[k];
+  }
+  return (ult&&ult.type==='congelamento')?(ult.date||''):'';
+}
+function accrueInadimplentes(){var changed=false,tocados=[];(inadimplentes||[]).forEach(function(i){if(i.interest==null||!i.dueDate)return;
+  // M2 — CONGELADO NAO RENDE. Sai daqui sem tocar em nada: nem no saldo, nem
+  // no vencimento, nem no historico. O vencimento fica PARADO no dia em que
+  // congelou, e e de proposito — ver descongelarInad(), que e quem empurra o
+  // vencimento para a frente SEM cobrar os meses que ficaram congelados.
+  if(inadCongelado(i))return;
+  var guard=0;while(daysUntil(i.dueDate)<0&&guard<600){var before=parseFloat(i.currentAmount)||0;var juros=parseFloat((before*(i.interest/100)).toFixed(2));var venc=i.dueDate;i.currentAmount=parseFloat((before+juros).toFixed(2));i.dueDate=addDays(i.dueDate,CONFIG.CICLO_DIAS);i.history=i.history||[];i.history.push({date:venc,type:'renovacao',value:before,rate:i.interest,note:'Juros de inadimplencia '+i.interest+'%: +'+fmt(juros)+'. Novo saldo: '+fmt(i.currentAmount)});i.lastAccrual=today();changed=true;if(tocados.indexOf(i.id)<0)tocados.push(i.id);guard++;}});if(changed)saveInad(tocados);return changed;}
 // Link WhatsApp sem duplicar o DDI 55
 function waLink(phone){
   var p=(phone||'').replace(/\D/g,'');
@@ -2661,20 +2710,42 @@ function pinWipe(){
 // ============================================================
 function calcStats(){
   var active=loans.filter(function(l){return!l.paid;});
-  // C7 — QUEM ATRASOU NAO PODE CONTAR NUM INDICADOR E SUMIR DO OUTRO.
-  // "Em risco" ja somava ativos + inadimplentes, mas "A receber" e "Vencido"
-  // somavam so os ativos. Resultado: mover um cliente para inadimplente derrubava
-  // o "A receber" do dono sem nada ter sido pago. Agora os tres olham o MESMO
-  // conjunto — tudo que ainda esta em aberto.
-  var emAberto=active.concat(inadimplentes||[]);
+  // ------------------------------------------------------------
+  // M1 — 20/09/2026, decisao do dono (Cortes), depois de conferir os numeros
+  // de verdade. REVERTE PARTE DA C7 DE 10/09.
+  //
+  // O QUE A C7 FEZ (10/09) e CONTINUA VALENDO: ela consertou uma INCOERENCIA.
+  // Antes dela, o inadimplente contava em "Em risco" e sumia de "A receber" —
+  // ou seja, o MESMO cliente entrava num indicador e sumia do outro. Isso
+  // continua PROIBIDO. O criterio tem que ser o MESMO nos cinco indicadores.
+  //
+  // O QUE MUDA AGORA: a C7 resolveu a incoerencia pondo "todos em todos".
+  // O dono olhou o painel em 20/09 e viu "A receber R$ 36.130,53", sendo que
+  // METADE disso (R$ 17.921,59) era UM unico inadimplente — R$ 1.000 rolando a
+  // 30% ao mes desde novembro de 2025, sem nunca ter pago um centavo. Ele nao
+  // reconhecia a propria operacao no painel. Entao a decisao e: os indicadores
+  // do topo mostram SO QUEM AINDA PAGA. O criterio passa a ser "so ativos em
+  // todos" — coerente do mesmo jeito, so que do outro lado.
+  //
+  // E O NUMERO DO INADIMPLENTE NAO SOME. Esconder do total e escolha do dono;
+  // fingir que o dinheiro nao existe, nao. Ele aparece em bloco proprio, logo
+  // abaixo dos indicadores, com o SALDO e com o CAPITAL DO BOLSO DELE parado
+  // ali. Sao os campos inadSaldo/inadCapital/inadRecebido/inadCount abaixo.
+  // ------------------------------------------------------------
   var now=new Date();var tm=now.getMonth();var ty=now.getFullYear();
-  var totalOwed=emAberto.reduce(function(s,l){return s+getBalance(l);},0);
+  var totalOwed=active.reduce(function(s,l){return s+getBalance(l);},0);
   var totalLent=active.reduce(function(s,l){return s+l.originalAmount;},0);
-  var totalOverdue=emAberto.filter(function(l){return daysUntil(l.dueDate)<0;}).reduce(function(s,l){return s+getBalance(l);},0);
-  // Quanto do "A receber" esta parado com inadimplente. Serve para a linha de
-  // aviso embaixo dos indicadores: sem ela o numero do dono muda do dia para a
-  // noite e ele nao sabe por que.
-  var inadAberto=_r2((inadimplentes||[]).reduce(function(s,i){return s+getBalance(i);},0));
+  var totalOverdue=active.filter(function(l){return daysUntil(l.dueDate)<0;}).reduce(function(s,l){return s+getBalance(l);},0);
+  // Quanto esta parado com inadimplente. inadAberto e o nome antigo (da C7) e
+  // fica onde esta para nao quebrar nada que ja o leia; inadSaldo e o mesmo
+  // numero com o nome novo, usado pelo bloco "Provavelmente perdido".
+  var inadSaldo=_r2((inadimplentes||[]).reduce(function(s,i){return s+getBalance(i);},0));
+  var inadAberto=inadSaldo;
+  // Do bolso do dono, parado com inadimplente: capital que de fato saiu.
+  var inadCapital=_r2((inadimplentes||[]).reduce(function(s,i){return s+ledger(i).capitalEmprestado;},0));
+  // O que ja voltou desses (nos casos reais costuma ser zero — e justamente o
+  // que faz o saldo inflar sem nada entrar).
+  var inadRecebido=_r2((inadimplentes||[]).reduce(function(s,i){return s+ledger(i).recebidoTotal;},0));
   var inadCount=(inadimplentes||[]).length;
   var warn3=active.filter(function(l){var d=daysUntil(l.dueDate);return d>=0&&d<=3;}).length;
   var clientCount=new Set(loans.map(function(l){return clientKey(l.name);})).size;
@@ -2694,18 +2765,19 @@ function calcStats(){
   var capitalMonth=capitalNoPeriodo(mStart,mEnd);
   var activeClientCount=new Set(active.map(function(l){return clientKey(l.name);})).size;
   var overdueCount=active.filter(function(l){return daysUntil(l.dueDate)<0;}).length;
-  // DINHEIRO EM RISCO: quanto do bolso dele ainda nao voltou. So conta o que
-  // ainda esta em aberto — emprestimos ativos + inadimplentes. Emprestimo
-  // quitado nao tem mais risco nenhum, esta fechado.
-  // emAberto ja foi montado la em cima (C7): ativos + inadimplentes.
-  var emRisco=_r2(emAberto.reduce(function(s,l){return s+ledger(l).emRisco;},0));
-  var capitalEmRisco=_r2(emAberto.reduce(function(s,l){return s+ledger(l).capitalEmprestado;},0));
-  // Quanto do dinheiro que saiu do bolso já voltou, nos empréstimos ainda em aberto.
+  // DINHEIRO EM RISCO: quanto do bolso dele ainda nao voltou. So conta
+  // emprestimo ATIVO (M1, 20/09): emprestimo quitado nao tem mais risco, e o
+  // inadimplente saiu dos indicadores do topo junto com os outros quatro — o
+  // capital dele aparece em inadCapital, no bloco "Provavelmente perdido".
+  var emRisco=_r2(active.reduce(function(s,l){return s+ledger(l).emRisco;},0));
+  var capitalEmRisco=_r2(active.reduce(function(s,l){return s+ledger(l).capitalEmprestado;},0));
+  // Quanto do dinheiro que saiu do bolso já voltou, nos empréstimos ainda ativos.
   // Limitado ao capital de cada um: o que passa disso é lucro, não devolução.
-  var capitalRecuperado=_r2(emAberto.reduce(function(s,l){
+  var capitalRecuperado=_r2(active.reduce(function(s,l){
     var g=ledger(l);return s+Math.min(g.recebidoTotal,g.capitalEmprestado);},0));
   return{totalOwed:totalOwed,totalLent:totalLent,totalOverdue:totalOverdue,warn3:warn3,
     inadAberto:inadAberto,inadCount:inadCount,
+    inadSaldo:inadSaldo,inadCapital:inadCapital,inadRecebido:inadRecebido,
     capitalRecuperado:capitalRecuperado,
     clientCount:clientCount,activeClientCount:activeClientCount,overdueCount:overdueCount,
     juros:juros,jurosYear:jurosYear,capitalYear:capitalYear,capitalMonth:capitalMonth,
@@ -2821,15 +2893,32 @@ function renderHome(){
     + tile('Em risco',dinK(s.emRisco),s.emRisco>0?'var(--am)':'var(--gr)',"goScreen('report')")
     +'</div>';
 
-  // C7 — LINHA DE AVISO DO INADIMPLENTE.
-  // "A receber" e "Vencido" agora incluem quem esta na lista de inadimplentes.
-  // Sem dizer isto em algum lugar, o dono ve um numero grande e nao entende de
-  // onde saiu (ou ve o numero cair quando alguem sai da lista). A linha e
-  // discreta, fica logo abaixo dos indicadores e some quando nao ha inadimplente.
-  if(s.inadAberto>0.009){
-    html+='<div style="font-size:11.5px;color:var(--dim2);padding:6px 16px 0;line-height:1.5">'
-      +'Inclui '+fmt(s.inadAberto)+' parados com '+s.inadCount
-      +(s.inadCount===1?' inadimplente.':' inadimplentes.')+'</div>';
+  // M1 — BLOCO "PROVAVELMENTE PERDIDO" (20/09/2026, decisao do dono).
+  // Saiu daqui a linha antiga da C7 ("Inclui R$ X parados com N inadimplentes"):
+  // ela existia para explicar um inadimplente que estava DENTRO dos quatro
+  // numeros de cima. Agora ele nao esta mais dentro, entao a frase mentiria.
+  //
+  // No lugar dela, o numero aparece SEPARADO — porque esconder do total e
+  // escolha do dono, mas sumir com o dinheiro nao e. O bloco mostra as duas
+  // coisas que importam: o saldo que o app diz que ele deve, e quanto DISSO
+  // saiu do bolso do dono (o resto e juro que so existe no papel).
+  //
+  // Cor: ambar/vermelho, que e a cor de SITUACAO. O dourado (--ac) e so de
+  // dinheiro-acao-principal e nao entra aqui. Toca e vai para a lista de
+  // inadimplentes. Some inteiro quando nao ha nenhum.
+  if(s.inadCount>0){
+    var corPerd=s.inadCapital>0.009?'var(--rd)':'var(--am)';
+    html+='<button onclick="filtrarClientes(\'inad\')" '
+      +'style="display:block;width:calc(100% - 28px);margin:8px 14px 0;text-align:left;'
+      +'background:transparent;border:1px solid var(--ln2);border-radius:10px;'
+      +'padding:9px 12px;font:inherit;cursor:pointer;opacity:.82">'
+      +'<div style="font-size:11.5px;font-weight:700;color:'+corPerd+';letter-spacing:.2px">'
+      +'Provavelmente perdido</div>'
+      +'<div style="font-size:11.5px;color:var(--dim2);margin-top:3px;line-height:1.5">'
+      + s.inadCount+(s.inadCount===1?' cliente':' clientes')
+      +' · saldo '+fmt(s.inadSaldo)
+      +' · do seu bolso: '+fmt(s.inadCapital)
+      +'</div></button>';
   }
 
   // O dinheiro do próprio bolso: quanto saiu, quanto já voltou, quanto ainda
@@ -4506,6 +4595,9 @@ function _histLabel(t,current){
   if(t==='ajuste')return{label:'Ajuste',cor:'var(--ac)',valCor:'var(--ac)',sinal:'+'};
   if(t==='desconto')return{label:'Desconto',cor:'var(--gr)',valCor:'var(--gr)',sinal:'-'};
   if(t==='estorno')return{label:'Estorno',cor:'var(--rd)',valCor:'var(--rd)',sinal:'-'};
+  // M2 — os dois marcos de juro congelado. Nao sao dinheiro: vao sem sinal.
+  if(t==='congelamento')return{label:'Juro congelado',cor:'var(--am)',valCor:'var(--dim2)',sinal:''};
+  if(t==='descongelamento')return{label:'Juro voltou a correr',cor:'var(--am)',valCor:'var(--dim2)',sinal:''};
   return{label:'Recebi'+(current?' (mês atual)':''),cor:'var(--gr)',valCor:'var(--gr)',sinal:'+'};
 }
 function openHistory(id){
@@ -4550,7 +4642,12 @@ function openHistory(id){
   modal('<div class="modal-header"><span class="modal-title">'+esc(l.name)+'</span>'
     +'<button class="modal-close" onclick="closeModal()" aria-label="Fechar">'+sv(I.x,18)+'</button></div>'
     +(ehInad?'<div style="margin-bottom:12px">'
-      +selo('INADIMPLENTE','var(--am)','var(--amS)')+'</div>':'')
+      +selo('INADIMPLENTE','var(--am)','var(--amS)')
+      // M2 — o mesmo selo da lista, aqui na ficha.
+      +(inadCongelado(l)
+        ?' '+selo('JURO CONGELADO DESDE '+fmtDate(inadCongeladoDesde(l)),'var(--am)','var(--amS)')
+        :'')
+      +'</div>':'')
     +(l.phone||l.address?'<div style="font-size:12.5px;color:var(--dim);margin-bottom:12px">'
       +esc([l.phone,l.address].filter(function(x){return x;}).join(' · '))+'</div>':'')
     +'<div class="tiles" style="margin:0">'
@@ -4570,6 +4667,19 @@ function openHistory(id){
     +((!l.paid&&!ehInad&&!parceled)
       ?'<button class="btn btn-ac" style="margin-top:14px" onclick="closeModal();abrirReceber(\''+_js(id)+'\')">'
        +'Registrar pagamento</button>':'')
+    // M2 — congelar/descongelar o juro deste inadimplente, direto da ficha.
+    +(ehInad
+      ?'<button class="btn btn-gh" style="margin-top:14px;color:var(--am)" onclick="closeModal();'
+       +(inadCongelado(l)?'descongelarInad':'congelarInad')+'(\''+_js(id)+'\')">'
+       +(inadCongelado(l)?'Descongelar o juro':'Congelar juro')+'</button>'
+       +'<div style="font-size:11.5px;color:var(--dim2);margin-top:4px;line-height:1.5">'
+       +(inadCongelado(l)
+         ?'O saldo está parado. Descongelar faz ele voltar a crescer daqui para a frente — '
+          +'os meses congelados não são cobrados depois.'
+         :'Congelar faz o saldo dele parar de crescer todo mês. Nada é apagado, e dá para '
+          +'descongelar quando quiser.')
+       +'</div>'
+      :'')
     +((!l.paid&&!ehInad)
       ?'<button class="btn-txt" style="width:100%;margin-top:8px;color:var(--am)"'
        +' onclick="moveToInad(\''+_js(id)+'\')">Mover só este empréstimo para inadimplentes</button>'
@@ -4902,12 +5012,31 @@ function renderInad(){
     +'<span>'+din(total,11.5,'var(--rd)')+' parado</span></div>'
     +'<div class="bloco">'+inadimplentes.map(function(i){
       var phone=i.phone||'';
+      // M2 — selo de juro congelado, com a data em que parou.
+      var gelado=inadCongelado(i);
+      var desde=gelado?inadCongeladoDesde(i):'';
       return _linhaAbre('vencido',"openHistory('"+_js(i.id)+"')","")
         +'<span class="linha-n">'+esc(i.name)+'</span>'
         +'<span class="linha-s">'+esc(i.motivo||'sem contato')+'</span>'
         +'<span class="linha-s">desde '+_dm(i.movidoEm)+' · '+(i.interest||0)+'% ao mês</span>'
         + _linhaFecha('<span style="text-align:right">'+din(i.currentAmount,15,'var(--rd)')+'</span>'
-          +'<span class="linha-st" style="color:var(--rd)">parado</span>')
+          // A palavra continua "parado" (em 320px "congelado" nao cabe na
+          // coluna e encosta na borda). Quem esta congelado se reconhece pela
+          // cor ambar aqui e pela faixa logo abaixo, que diz desde quando.
+          +'<span class="linha-st" style="color:'+(gelado?'var(--am)':'var(--rd)')+'">'
+          +'parado</span>')
+      // M2 — o selo vai numa FAIXA PROPRIA, de ponta a ponta. Dentro da linha
+      // ele disputava espaco com o valor e a data saia cortada ("desde ...") —
+      // e a data e justamente o que o dono precisa ler.
+      +(gelado
+        ?'<div style="padding:0 12px 9px;background:var(--pn);font-size:11.5px;'
+         +'font-weight:700;color:var(--am)">juro congelado desde '
+         +esc(fmtDate(desde))+'</div>'
+        :'')
+      // M2 — o botao de congelar vai numa LINHA SO DELE, de ponta a ponta.
+      // Enfiado na fila de baixo junto com Contato/Reativar/lixeira, em 320px
+      // os quatro se atropelavam e nenhum texto ficava legivel.
+      +'<div style="padding:0 12px 9px;background:var(--pn)">'+_btnCongelarHtml(i)+'</div>'
       +'<div style="display:flex;gap:8px;padding:0 12px 11px;background:var(--pn);'
         +'border-bottom:1px solid var(--ln)">'
         +(phone?'<button class="seg-btn" style="color:var(--gr);display:flex;align-items:center;'
@@ -4921,8 +5050,100 @@ function renderInad(){
       +'</div>';
     }).join('')+'</div>'
     +'<div style="font-size:11.5px;color:var(--dim2);padding:10px 16px;line-height:1.5">'
-    +'O saldo de quem está aqui continua crescendo com o juro do mês. Reativar devolve o '
+    +'O saldo de quem está aqui continua crescendo com o juro do mês — a não ser que você '
+    +'congele o juro dele. Congelar para o saldo no valor de hoje; descongelar faz voltar a '
+    +'correr daí para a frente, sem cobrar os meses congelados. Reativar devolve o '
     +'empréstimo para a lista normal, com o saldo já corrigido.</div>';
+}
+// ============================================================
+// M2 — CONGELAR / DESCONGELAR O JURO DE UM INADIMPLENTE (20/09/2026)
+// ============================================================
+// Congelar para o relogio do juro daquele cliente. Descongelar volta a ligar,
+// mas SEM cobrar de uma vez os meses que ficaram parados — e esse o ponto
+// delicado, explicado linha a linha em descongelarInad().
+// O botao, do jeito que aparece tanto na lista quanto na ficha. Um so lugar
+// para o texto nao divergir entre as duas telas.
+function _btnCongelarHtml(i){
+  var gelado=inadCongelado(i);
+  return '<button class="seg-btn" style="width:100%;color:var(--am)" onclick="'
+    +(gelado?'descongelarInad':'congelarInad')+'(\''+_js(i.id)+'\')">'
+    +(gelado?'Descongelar o juro':'Congelar juro')+'</button>';
+}
+function congelarInad(id){
+  var i=(inadimplentes||[]).find(function(x){return x.id===id;});if(!i)return;
+  if(inadCongelado(i)){showToast('O juro deste cliente já está congelado','warn');return;}
+  pedirConfirmacao({
+    titulo:'Congelar o juro de '+i.name+'?',
+    texto:'A partir de hoje o saldo dele PARA de crescer. Ele continua devendo '
+      +fmt(getBalance(i))+', esse valor fica parado nesse número e não aumenta mais '
+      +'todo mês.\n\nNada é apagado: o que já foi cobrado continua lá. Você pode '
+      +'descongelar quando quiser, e aí o juro volta a correr do dia em que você '
+      +'descongelar em diante — os meses congelados não são cobrados depois.',
+    ok:'Congelar o juro'},function(){_congelarInadExec(id);});
+}
+function _congelarInadExec(id){
+  var i=(inadimplentes||[]).find(function(x){return x.id===id;});if(!i)return;
+  // Acerta primeiro o que ja venceu ate hoje: assim o congelamento comeca de um
+  // ponto limpo, e ninguem fica devendo um mes que o app ainda nao tinha somado.
+  accrueInadimplentes();
+  i.history=i.history||[];
+  i.history.push({date:today(),type:'congelamento',value:0,
+    note:'Juro congelado por decisão do dono. Saldo parado em '+fmt(getBalance(i))+'.'});
+  saveInad(id);renderAll();
+  showToast('❄️ Juro congelado — o saldo parou de crescer');
+}
+function descongelarInad(id){
+  var i=(inadimplentes||[]).find(function(x){return x.id===id;});if(!i)return;
+  if(!inadCongelado(i)){showToast('O juro deste cliente já está correndo','warn');return;}
+  var meses=_inadMesesCongelados(i);
+  pedirConfirmacao({
+    titulo:'Fazer o juro de '+i.name+' voltar a correr?',
+    texto:'O saldo dele volta a crescer todo mês, como antes.\n\n'
+      +(meses>0
+        ? 'Os '+meses+(meses===1?' mês':' meses')+' em que ficou congelado NÃO vão ser '
+          +'cobrados agora. O juro recomeça daqui para a frente, no próximo vencimento.'
+        : 'O juro recomeça daqui para a frente, no próximo vencimento.'),
+    ok:'Descongelar'},function(){_descongelarInadExec(id);});
+}
+// Quantos ciclos de 30 dias passaram desde que o vencimento parou. E o numero
+// de meses que NAO serao cobrados.
+function _inadMesesCongelados(i){
+  var d=i&&i.dueDate,n=0,guard=0;
+  if(!d)return 0;
+  while(daysUntil(d)<0&&guard<600){d=addDays(d,CONFIG.CICLO_DIAS);n++;guard++;}
+  return n;
+}
+function _descongelarInadExec(id){
+  var i=(inadimplentes||[]).find(function(x){return x.id===id;});if(!i)return;
+  // ---- O CUIDADO DO `lastAccrual` E DO `dueDate` ----
+  // accrueInadimplentes roda um "enquanto o vencimento ja passou, cobra mais um
+  // mes". Enquanto congelado, ele nem entra no laco — entao o `dueDate` ficou
+  // PARADO no passado, juntando meses vencidos. Se a gente so tirasse o
+  // congelamento, o proximo desenho da tela entraria nesse laco e cobraria
+  // TODOS os meses congelados de uma vez — exatamente o que nao pode acontecer.
+  //
+  // Por isso, ao descongelar, empurramos o vencimento para a frente de 30 em 30
+  // dias ate ele voltar a ser hoje ou depois de hoje, SEM somar um centavo de
+  // juro e SEM gravar nenhuma 'renovacao'. O saldo sai daqui igualzinho ao que
+  // entrou; so o relogio foi acertado. O juro volta a correr do proximo
+  // vencimento em diante.
+  //
+  // `lastAccrual` responde "quando o app rodou esta conta pela ultima vez".
+  // Enquanto congelado ele ficou parado, porque conta nenhuma rodou. Aqui ele
+  // passa a ser hoje: hoje o app acertou o relogio deste registro.
+  var pulados=0,guard=0;
+  while(i.dueDate&&daysUntil(i.dueDate)<0&&guard<600){
+    i.dueDate=addDays(i.dueDate,CONFIG.CICLO_DIAS);pulados++;guard++;
+  }
+  i.lastAccrual=today();
+  i.history=i.history||[];
+  i.history.push({date:today(),type:'descongelamento',value:0,
+    note:'Juro voltou a correr. '+(pulados>0
+      ? pulados+(pulados===1?' mês congelado não foi cobrado':' meses congelados não foram cobrados')
+        +'. Próximo vencimento: '+fmtDate(i.dueDate)+'.'
+      : 'Próximo vencimento: '+fmtDate(i.dueDate)+'.')});
+  saveInad(id);renderAll();
+  showToast('🔥 Juro voltou a correr');
 }
 function reativarInad(id){
   var i=inadimplentes.find(function(x){return x.id===id;});if(!i)return;
@@ -5083,7 +5304,11 @@ function renderReportBody(){
   // A janela do relatorio tem o fim INCLUSIVO (rr.to conta), e capitalNoPeriodo
   // usa fim EXCLUSIVO; por isso o +1 dia.
   var capFim=rr.to?addDays(rr.to,1):null;
-  var listaCap=filtered.concat(fInad);
+  // M1 (20/09/2026) — o inadimplente saiu de "Capital emprestado", pelo mesmo
+  // motivo que saiu de "Em aberto": os dois indicadores do relatorio passam a
+  // falar so de quem ainda paga. O capital parado com ele nao some: vai na
+  // linha separada logo abaixo dos indicadores (capitalInad).
+  var listaCap=filtered;
   var totalCapital=capitalNoPeriodo(rr.from,capFim,listaCap);
   // REGISTRO ANTIGO SEM LANCAMENTO 'emprestimo'. capitalNoPeriodo so ve o
   // historico; um registro dos primeiros tempos do app (ou vindo da nuvem) pode
@@ -5097,11 +5322,16 @@ function renderReportBody(){
     if(!inRange(l.startDate,rr.from,rr.to))return;
     totalCapital+=loanPrincipal(l);
   });
-  // C7 — mesma correcao do painel: o inadimplente que passou pelo filtro tambem
-  // esta em aberto. Antes ele contava no capital e no juro e sumia daqui.
-  var totalAberto=filtered.filter(function(l){return!l.paid;}).reduce(function(s,l){return s+getBalance(l);},0)
-    +fInad.reduce(function(s,i){return s+getBalance(i);},0);
+  // M1 — MESMO CRITERIO DO PAINEL (20/09/2026, decisao do dono).
+  // A C7 tinha posto o inadimplente DENTRO de "Em aberto" aqui, para bater com
+  // o painel. O painel mudou de lado, entao este muda junto: relatorio e painel
+  // TEM que contar a mesma coisa. "Em aberto" e "Capital emprestado" passam a
+  // ser so dos ativos; o inadimplente vai para a linha separada logo abaixo.
+  // O que a C7 proibiu continua proibido: nao existe contar num lugar e sumir
+  // de outro — aqui ele sai dos dois indicadores e aparece por escrito.
+  var totalAberto=filtered.filter(function(l){return!l.paid;}).reduce(function(s,l){return s+getBalance(l);},0);
   var abertoInad=_r2(fInad.reduce(function(s,i){return s+getBalance(i);},0));
+  var capitalInad=_r2(fInad.reduce(function(s,i){return s+ledger(i).capitalEmprestado;},0));
   var totalJuros=filtered.reduce(function(s,l){return s+loanJuros(l);},0)
     +fInad.reduce(function(s,i){return s+loanJuros(i);},0);
   var vencidos=filtered.filter(function(l){return!l.paid&&daysUntil(l.dueDate)<0;}).length;
@@ -5118,12 +5348,16 @@ function renderReportBody(){
         +Math.round(totalDesc).toLocaleString('pt-BR')+'</span>',
         totalDesc>0?'var(--dim)':'var(--dim2)')
     +'</div>'
-    // C7 — mesma linha de aviso do painel: dizer quanto do "Em aberto" esta
-    // parado com inadimplente, para o numero nao mudar sem explicacao.
-    +(abertoInad>0.009
+    // M1 — a MESMA linha separada do painel, com as mesmas duas informacoes:
+    // o saldo parado e quanto disso saiu do bolso do dono. Fora dos dois
+    // indicadores de cima, mas a vista. Cor de situacao (ambar), nunca dourado.
+    +(fInad.length
       ?'<div style="font-size:11.5px;color:var(--dim2);padding:0 16px 6px;line-height:1.5">'
-       +'Em aberto inclui '+fmt(abertoInad)+' parados com '+fInad.length
-       +(fInad.length===1?' inadimplente.':' inadimplentes.')+'</div>'
+       +'<b style="color:var(--am)">Provavelmente perdido</b> — '+fInad.length
+       +(fInad.length===1?' cliente':' clientes')
+       +' · saldo '+fmt(abertoInad)
+       +' · do seu bolso: '+fmt(capitalInad)
+       +' (fora de "Em aberto" e de "Capital emprestado").</div>'
       :'')
     +'<div style="font-size:11.5px;color:var(--dim2);padding:0 16px;line-height:1.5">'
     // C9 — deixa claro que o capital mostrado e o do periodo escolhido, nao o da
@@ -6146,19 +6380,28 @@ function conferirContas(){
   // Indicadores da tela contra a soma feita registro a registro.
   try{
     var s=calcStats();
-    var emAberto=(loans||[]).filter(function(l){return !l.paid;}).concat(inadimplentes||[]);
-    var somaSaldo=_r2(emAberto.reduce(function(a,l){return a+getBalance(l);},0));
+    // M1 (20/09/2026) — a conferencia anda junto com o criterio novo: os
+    // indicadores do topo somam so os ATIVOS. Se ela continuasse somando
+    // ativos + inadimplentes, acusaria um erro que nao existe todo dia.
+    // O que a C7 proibiu continua proibido, e e ISTO que estas tres linhas
+    // vigiam: nenhum indicador pode contar um registro que outro esconde.
+    var soAtivos=(loans||[]).filter(function(l){return !l.paid;});
+    var somaSaldo=_r2(soAtivos.reduce(function(a,l){return a+getBalance(l);},0));
     if(Math.abs(_r2(s.totalOwed)-somaSaldo)>0.01)
       add('Indicador da tela não bate com a soma um a um',
         '"A receber" mostra '+fmt(s.totalOwed)+' e somando registro a registro dá '+fmt(somaSaldo)+'.');
-    var somaRisco=_r2(emAberto.reduce(function(a,l){return a+ledger(l).emRisco;},0));
+    var somaRisco=_r2(soAtivos.reduce(function(a,l){return a+ledger(l).emRisco;},0));
     if(Math.abs(_r2(s.emRisco)-somaRisco)>0.01)
       add('Indicador da tela não bate com a soma um a um',
         '"Dinheiro em risco" mostra '+fmt(s.emRisco)+' e somando registro a registro dá '+fmt(somaRisco)+'.');
     var somaInad=_r2((inadimplentes||[]).reduce(function(a,i){return a+getBalance(i);},0));
-    if(Math.abs(_r2(s.inadAberto)-somaInad)>0.01)
+    if(Math.abs(_r2(s.inadSaldo)-somaInad)>0.01)
       add('Indicador da tela não bate com a soma um a um',
-        'O total parado com inadimplentes mostra '+fmt(s.inadAberto)+' e a soma um a um dá '+fmt(somaInad)+'.');
+        'O total parado com inadimplentes mostra '+fmt(s.inadSaldo)+' e a soma um a um dá '+fmt(somaInad)+'.');
+    var somaInadCap=_r2((inadimplentes||[]).reduce(function(a,i){return a+ledger(i).capitalEmprestado;},0));
+    if(Math.abs(_r2(s.inadCapital)-somaInadCap)>0.01)
+      add('Indicador da tela não bate com a soma um a um',
+        'O capital parado com inadimplentes mostra '+fmt(s.inadCapital)+' e a soma um a um dá '+fmt(somaInadCap)+'.');
   }catch(e){
     add('Não consegui conferir os indicadores da tela',((e&&e.message)||'erro'));
   }
@@ -6170,6 +6413,198 @@ function conferirContas(){
     inadimplentes:(inadimplentes||[]).length
   };
 }
+// ============================================================
+// M3 — ENCERRAR PENDÊNCIAS ANTIGAS (20/09/2026)
+// ============================================================
+// Cinco registros antigos do dono ficaram com saldo pendurado por causa do
+// botão "Pagar tudo" da versão velha, que marcava como quitado sem conferir o
+// valor. São DOIS problemas diferentes no mesmo lugar, e esta ferramenta
+// precisa distinguir um do outro:
+//
+//   A) o extrato fecha em zero  -> o cliente pagou tudo mesmo; é só o campo
+//      `currentAmount` do cadastro que ficou esquecido com o valor antigo.
+//      Saída: ZERAR o campo. Nenhum dinheiro muda de mãos.
+//
+//   B) o extrato ainda tem saldo -> falta dinheiro de verdade. Aí não dá para
+//      zerar de graça: ou o dono PERDOA o que falta (e isso tem que virar um
+//      desconto de verdade, com data e motivo, para entrar no relatório de
+//      descontos), ou ele REABRE o registro com o saldo que o extrato mostra.
+//
+// Nunca mexe em registro que não esteja marcado como quitado.
+function _pendenciasAntigas(){
+  var fora=[];
+  (loans||[]).forEach(function(l){
+    if(!l||!l.paid)return;                       // só quitado, nunca outro
+    var gb,lg;
+    try{gb=getBalance(l);lg=ledger(l);}catch(e){return;}
+    if(!(gb>0.01))return;                        // sem saldo pendurado, nada a fazer
+    var real=_r2(lg.saldo);
+    fora.push({loan:l,id:l.id,nome:l.name||'NÃO INFORMADO',
+      cartao:_r2(gb),                            // o que o cadastro mostra
+      extrato:real,                              // o que o extrato diz de verdade
+      caso:(real<=0.01)?'zerar':'saldo'});
+  });
+  return fora;
+}
+// Abre a ferramenta no primeiro registro da fila. UM POR VEZ, sempre dizendo o
+// nome do cliente e o valor.
+function encerrarPendencias(){
+  var lista=_pendenciasAntigas();
+  if(!lista.length){
+    closeModal();
+    showToast('✅ Nenhuma pendência antiga para encerrar');
+    return;
+  }
+  _pendenciaPerguntar(lista[0],lista.length);
+}
+function _pendenciaPerguntar(p,quantos){
+  var resta=(quantos>1)
+    ?'<div style="font-size:11.5px;color:var(--dim2);margin-top:9px">'
+      +'Depois deste faltam mais '+(quantos-1)+'.</div>'
+    :'';
+  var corpo,acoes;
+  if(p.caso==='zerar'){
+    corpo='<div style="font-size:12.5px;color:var(--dim);line-height:1.6">'
+      +'O extrato de <b style="color:var(--tx)">'+esc(p.nome)+'</b> fecha em R$ 0,00: '
+      +'ele pagou tudo mesmo. O que sobrou foi o campo do cadastro, que ficou '
+      +'esquecido em <b style="color:var(--tx)">'+fmt(p.cartao)+'</b>.<br><br>'
+      +'Zerar esse campo não perdoa nada nem mexe em dinheiro — só acerta o que a '
+      +'tela mostra.</div>'+resta;
+    acoes='<button class="btn-primary" onclick="_pendenciaZerar(\''+_js(p.id)+'\')">'
+      +'Zerar saldo</button>';
+  }else{
+    corpo='<div style="font-size:12.5px;color:var(--dim);line-height:1.6">'
+      +'<b style="color:var(--tx)">'+esc(p.nome)+'</b> está marcado como quitado, mas o '
+      +'extrato mostra que ainda faltam <b style="color:var(--tx)">'+fmt(p.extrato)+'</b> '
+      +'de verdade. (O cadastro mostra '+fmt(p.cartao)+', que é o campo velho, errado.)'
+      +'<br><br>Escolha o que aconteceu de verdade:</div>'+resta;
+    acoes='<button class="btn-primary" onclick="_pendenciaDesconto(\''+_js(p.id)+'\')">'
+      +'Registrar desconto de '+fmt(p.extrato)+' e encerrar</button>'
+      +'<button class="btn-secondary" onclick="_pendenciaReabrir(\''+_js(p.id)+'\')">'
+      +'Reabrir com saldo de '+fmt(p.extrato)+'</button>';
+  }
+  modal('<div class="modal-header"><span class="modal-title">Encerrar pendência antiga</span>'
+    +'<button class="modal-close" onclick="closeModal()">×</button></div>'
+    +corpo
+    +'<div class="modal-actions" style="flex-wrap:wrap;gap:8px">'+acoes
+    +'<button class="btn-secondary" onclick="closeModal()">Agora não</button></div>');
+}
+// Acha o registro da fila outra vez (a lista é refeita a cada passo, então
+// nunca se trabalha com um retrato velho da base).
+function _pendenciaAchar(id){
+  var lista=_pendenciasAntigas();
+  for(var k=0;k<lista.length;k++)if(lista[k].id===id)return lista[k];
+  return null;
+}
+// Passo seguinte: reabre a ferramenta no próximo da fila, ou avisa que acabou.
+function _pendenciaSeguinte(){
+  var lista=_pendenciasAntigas();
+  if(!lista.length){closeModal();showToast('✅ Pendências antigas encerradas');return;}
+  _pendenciaPerguntar(lista[0],lista.length);
+}
+// --- A) só o campo esquecido ---
+function _pendenciaZerar(id){
+  var p=_pendenciaAchar(id);if(!p)return;
+  closeModal();
+  pedirConfirmacao({
+    titulo:'Zerar o saldo de '+p.nome+'?',
+    texto:'O extrato dele já fecha em R$ 0,00. Isto só apaga o '+fmt(p.cartao)
+      +' que ficou preso no cadastro. Nada é perdoado e nada é cobrado.\n\n'
+      +'Uma cópia de segurança é guardada antes.',
+    ok:'Zerar saldo'},function(){
+      _redeAntesDeOperacao('antes de zerar o saldo esquecido de '+p.nome,function(){
+        _pendenciaZerarExec(id);
+      });
+    });
+}
+function _pendenciaZerarExec(id){
+  var l=(loans||[]).find(function(x){return x.id===id;});
+  if(!l||!l.paid)return;                          // a trava vale até aqui
+  var antes=_r2(getBalance(l));
+  l.currentAmount=0;
+  l.history=l.history||[];
+  // Rastro com valor ZERO: não mexe no extrato (o ledger anda o valor gravado),
+  // só deixa escrito o que foi feito e quando.
+  l.history.push({type:'ajuste',date:today(),value:0,capital:0,
+    note:'Encerramento de pendência antiga: o extrato já fechava em R$ 0,00 e o cadastro '
+      +'ainda mostrava '+fmt(antes)+'. Campo zerado; nenhum valor foi perdoado.'});
+  save(id);renderAll();
+  showToast('✅ Saldo de '+l.name+' zerado');
+  _pendenciaSeguinte();
+}
+// --- B1) perdoa o que falta, pelo caminho de desconto que já existe ---
+function _pendenciaDesconto(id){
+  var p=_pendenciaAchar(id);if(!p)return;
+  closeModal();
+  pedirConfirmacao({
+    titulo:'Perdoar '+fmt(p.extrato)+' de '+p.nome+'?',
+    texto:'Isto registra um DESCONTO de '+fmt(p.extrato)+' com a data de hoje e o motivo '
+      +'"Encerramento de pendência antiga". O valor aparece no relatório de descontos — '
+      +'não é dinheiro que entrou, é dinheiro que você deixou de receber.\n\n'
+      +'Depois disso a dívida fica encerrada e o saldo vai a zero.\n\n'
+      +'Uma cópia de segurança é guardada antes.',
+    ok:'Registrar desconto e encerrar'},function(){
+      _redeAntesDeOperacao('antes de encerrar a pendência antiga de '+p.nome+' com desconto',
+        function(){_pendenciaDescontoExec(id);});
+    });
+}
+function _pendenciaDescontoExec(id){
+  var l=(loans||[]).find(function(x){return x.id===id;});
+  if(!l||!l.paid)return;                          // a trava vale até aqui
+  var p=_pendenciaAchar(id);if(!p)return;
+  // 1) O desconto DE VERDADE, pelo caminho que já existe e já está testado:
+  //    _regDesconto grava o lançamento 'desconto' no histórico, com data e
+  //    motivo, que é o que faz ele entrar no relatório de descontos.
+  _regDesconto(l,p.extrato,'Encerramento de pendência antiga');
+  // 2) O campo esquecido do cadastro. O desconto zera o EXTRATO; o cadastro
+  //    destes cinco registros carrega um valor que nunca existiu no extrato,
+  //    e é ele que precisa ser zerado à parte — o mesmo conserto do caso A.
+  if(getBalance(l)>0.009){
+    var sobra=_r2(getBalance(l));
+    l.currentAmount=0;
+    l.history.push({type:'ajuste',date:today(),value:0,capital:0,
+      note:'Encerramento de pendência antiga: depois do desconto ainda sobrava '+fmt(sobra)
+        +' preso no cadastro, sem lançamento nenhum por trás. Campo zerado.'});
+  }
+  l.paid=true;
+  save(id);renderAll();
+  showToast('✅ '+l.name+': desconto de '+fmt(p.extrato)+' registrado');
+  _pendenciaSeguinte();
+}
+// --- B2) reabre com o saldo que o extrato mostra ---
+function _pendenciaReabrir(id){
+  var p=_pendenciaAchar(id);if(!p)return;
+  closeModal();
+  pedirConfirmacao({
+    titulo:'Reabrir o empréstimo de '+p.nome+'?',
+    texto:'Ele volta para a lista de quem ainda deve, com saldo de '+fmt(p.extrato)
+      +' — que é o que o extrato mostra. Nada é perdoado.\n\n'
+      +'O vencimento continua o que já estava gravado, então ele pode aparecer como '
+      +'vencido. Uma cópia de segurança é guardada antes.',
+    ok:'Reabrir'},function(){
+      _redeAntesDeOperacao('antes de reabrir a pendência antiga de '+p.nome,function(){
+        _pendenciaReabrirExec(id);
+      });
+    });
+}
+function _pendenciaReabrirExec(id){
+  var l=(loans||[]).find(function(x){return x.id===id;});
+  if(!l||!l.paid)return;                          // a trava vale até aqui
+  var p=_pendenciaAchar(id);if(!p)return;
+  var pago=(l.payments||[]).reduce(function(s,x){return s+(x.value||0);},0);
+  // getBalance = currentAmount - pagamentos do período. Para o cartão mostrar
+  // exatamente o saldo do extrato, o campo tem que ser saldo + o que já foi pago.
+  l.currentAmount=_r2(p.extrato+pago);
+  l.paid=false;
+  l.history=l.history||[];
+  l.history.push({type:'ajuste',date:today(),value:0,capital:0,
+    note:'Encerramento de pendência antiga: registro reaberto. O cadastro mostrava '
+      +fmt(p.cartao)+' e o extrato, '+fmt(p.extrato)+'. Vale o extrato.'});
+  save(id);renderAll();
+  showToast('↩️ '+l.name+' reaberto com saldo de '+fmt(p.extrato));
+  _pendenciaSeguinte();
+}
+
 // Texto em linguagem comum — é o mesmo que vai para a área de transferência.
 function _conferenciaTexto(r){
   var t='CONFERÊNCIA DE CONTAS — '+_segDataHora(new Date().toISOString())+'\n';
@@ -6217,12 +6652,23 @@ function abrirConferencia(){
       +esc('Encontrei '+_segPlural(r.problemas.length,'coisa fora do lugar','coisas fora do lugar'))+'</div>'
       +'<div style="font-size:12.5px;color:var(--dim);margin-top:4px">'+esc(cab)+'</div></div>';
     corpo+=grupos.map(function(g){
+      // M3 — só este grupo ganha a ferramenta de encerrar, e só quando de fato
+      // existe registro quitado com saldo pendurado para tratar.
+      var temFerramenta=(g==='Marcado como quitado, mas com saldo')
+        && _pendenciasAntigas().length>0;
       return '<div style="margin-bottom:12px">'
         +'<div style="font-size:13.5px;font-weight:700;margin-bottom:5px">'+esc(g)+' ('+porGrupo[g].length+')</div>'
         +porGrupo[g].map(function(x){
           return '<div style="font-size:12.5px;color:var(--dim);line-height:1.55;padding:5px 0 5px 10px;'
             +'border-left:2px solid var(--ln2)">'+esc(x)+'</div>';
         }).join('')
+        +(temFerramenta
+          ?'<button class="btn btn-gh" style="margin-top:9px" onclick="encerrarPendencias()">'
+           +'Encerrar pendências antigas</button>'
+           +'<div style="font-size:11.5px;color:var(--dim2);margin-top:4px;line-height:1.5">'
+           +'Trata um registro por vez, dizendo o nome e o valor, e pergunta antes de cada '
+           +'um. Guarda uma cópia de segurança antes de mexer.</div>'
+          :'')
         +'</div>';
     }).join('');
   }
