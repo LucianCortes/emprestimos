@@ -113,11 +113,20 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .screen.active{display:block}
 .tabs{position:fixed;bottom:0;left:0;right:0;z-index:70;display:flex;
   background:var(--pn);border-top:1px solid var(--ln);padding:6px 4px calc(10px + env(safe-area-inset-bottom))}
-.tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 2px;
-  min-height:52px;justify-content:center;color:var(--dim2);
+.tab{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 2px;
+  min-height:52px;justify-content:center;color:var(--dim2);white-space:nowrap;
   font-family:Archivo,sans-serif;font-size:10.5px;font-weight:700;position:relative}
 .tab[aria-current="page"]{color:var(--ac)}
-.tab-badge{position:absolute;top:2px;right:calc(50% - 20px);background:var(--rd);color:var(--bg);
+/* CINCO abas desde 22/09/2026. O rótulo mais longo é "Inadimplentes" e a
+   coluna caiu de 1/4 para 1/5 da tela. Deixar o texto quebrar em duas linhas
+   empurraria a barra para cima e taparia o fim das listas (o padding do rodapé
+   e a altura do aviso são números fixos casados com esta barra). Por isso a
+   fonte encolhe: é a saída que não mexe em mais nada. */
+@media (max-width:430px){
+  .tab{font-size:9.5px;letter-spacing:-.02em;padding-left:1px;padding-right:1px;gap:2px}
+}
+@media (max-width:359px){.tab{font-size:8.6px}}
+.tab-badge{position:absolute;top:2px;right:calc(50% - 18px);background:var(--rd);color:var(--bg);
   min-width:16px;height:16px;border-radius:8px;font-size:9px;font-weight:800;
   display:flex;align-items:center;justify-content:center;padding:0 4px}
 
@@ -136,6 +145,15 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
   display:block;min-height:56px}
 .tile-l{font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--dim2)}
 .tile-v{margin-top:2px;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hero-c{background:var(--pn);border-bottom:1px solid var(--ln);padding:20px 14px 18px;text-align:center}
+.hero-n{margin-top:5px;font-size:34px;font-weight:700;letter-spacing:-.02em;line-height:1.05}
+.hero-n .mono{font-size:inherit}
+.hero-s{font-size:12px;color:var(--dim);margin-top:6px}
+.mensal{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;
+  background:var(--pn);border:none;border-bottom:1px solid var(--ln);padding:12px 13px;
+  text-align:left;color:inherit;font:inherit;cursor:pointer;min-height:48px}
+.mensal-e{display:flex;flex-direction:column;gap:3px;min-width:0}
+.mensal-m{font-family:Archivo,sans-serif;font-weight:700;font-size:14.5px}
 
 /* caixa com borda — NUNCA dentro de outra caixa com borda */
 .bloco{background:var(--pn);border:1px solid var(--ln);border-radius:12px;overflow:hidden;margin:0 14px}
@@ -180,8 +198,9 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
    para o lado. O empréstimo aberto fica com o fundo do dourado suave. */
 .emp-linha{display:flex;align-items:center;justify-content:space-between;gap:10px;
   width:100%;min-height:48px;padding:10px 13px;border:none;text-align:left;color:var(--tx)}
-.emp-linha-t{flex:1;min-width:0;font-size:13.5px;color:var(--dim);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Deixa quebrar em duas linhas em vez de esconder a situação com "…": no
+   painel de 350px do computador e no celular estreito, o texto não cabia. */
+.emp-linha-t{flex:1;min-width:0;font-size:13.5px;color:var(--dim);line-height:1.35}
 
 .btn{display:flex;align-items:center;justify-content:center;gap:7px;min-height:48px;
   border-radius:12px;font-family:Archivo,sans-serif;font-size:15px;font-weight:700;padding:0 16px;width:100%}
@@ -195,6 +214,12 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .btn-txt{color:var(--dim);font-weight:600;font-family:inherit;font-size:14px;min-height:44px}
 .btn-mini{min-height:44px;border-radius:9px;padding:0 13px;background:var(--ac);color:var(--acTx);
   font-family:Archivo,sans-serif;font-size:13px;font-weight:700;flex:none}
+/* Celular estreito: a sub-linha quebra em duas em vez de sumir com "…".
+   Esconder a data de vencimento é perder justamente a informação pela qual a
+   linha existe — altura é barata, informação escondida não. */
+@media (max-width:420px){
+  .linha-s{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.35}
+}
 /* aparelho estreito: o botão cede espaço para o nome do cliente */
 @media (max-width:359px){
   .btn-mini{padding:0 9px;font-size:12.5px}
@@ -229,6 +254,13 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .seg-btn{flex:1 1 0;min-width:0;min-height:44px;border-radius:9px;font-size:13px;font-weight:600;
   border:1px solid var(--ln2);background:var(--pn);color:var(--dim);white-space:nowrap}
 .seg-btn.active{background:var(--ac);border-color:var(--ac);color:var(--acTx)}
+/* Atalhos da tela Receber ("Só o juro · R$ 1.500,00"). Com `nowrap` herdado do
+   .seg-btn o valor vazava para fora do botão E para fora da tela — era o único
+   lugar do app com rolagem lateral, e aparecia em qualquer celular estreito
+   assim que o juro tinha muitos dígitos. Rótulo em cima, valor embaixo: cabe
+   sempre, sem cortar número nenhum. (Achado na varredura final de 23/09/2026.) */
+.seg-btn.atalho{white-space:normal;line-height:1.25;padding:6px 8px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
 
 /* prévia de cálculo (usada no formulário, na renovação e na edição) */
 .previa,.preview-box{border:1px solid var(--ln);border-radius:11px;background:var(--pn);
@@ -370,10 +402,17 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 /* contadores do relatório — a etiqueta herda o tema (o style de linha é legado
    preservado porque a bateria de testes financeiros o verifica letra por letra) */
 .cnts{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:12px 14px 0}
-/* em tela bem estreita quatro colunas não cabem: viram duas, sem cortar palavra */
-@media (max-width:359px){.cnts{grid-template-columns:1fr 1fr}}
+/* No celular quatro colunas não cabem: viram duas, sem cortar palavra.
+   O corte era em 359px e subiu para 429px em 22/09/2026 — a medição mostrou
+   que "Inadimplentes" perdia letras entre 360 e 429px, justamente a faixa dos
+   aparelhos mais comuns, e por acaso escapava em 320px porque lá já eram duas
+   colunas. Agora o contador é botão que abre uma lista: o rótulo precisa ser
+   lido inteiro antes de o dono decidir tocar. */
+@media (max-width:429px){.cnts{grid-template-columns:1fr 1fr}}
 .cnt{background:var(--pn);border:1px solid var(--ln);border-radius:10px;padding:9px 4px;
-  text-align:center;min-width:0;overflow:hidden}
+  text-align:center;min-width:0;overflow:hidden;min-height:52px;color:inherit;font:inherit;
+  display:flex;flex-direction:column;justify-content:center}
+.cnt[aria-pressed="true"]{background:var(--pn2)}
 .cnt>div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cnt div[style^="font-size:9px"]{font-size:10px!important;font-weight:600;margin-top:1px;
   color:var(--dim2)!important}
@@ -440,7 +479,8 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
     </div>
     <button class="menu-i" id="menu-home" onclick="goScreen('home')"><span id="mi-home"></span>Carteira</button>
     <button class="menu-i" id="menu-clients" onclick="goScreen('clients')"><span id="mi-clients"></span>Clientes</button>
-    <button class="menu-i" id="menu-report" onclick="goScreen('report')"><span id="mi-report"></span>Números</button>
+    <button class="menu-i" id="menu-inad" onclick="goScreen('inad')"><span id="mi-inad"></span>Inadimplentes<span id="inad-badge-desk" style="display:none;margin-left:auto;background:var(--rdS);color:var(--rd);border-radius:8px;min-width:18px;height:18px;padding:0 5px;font-size:10px;font-weight:800;align-items:center;justify-content:center"></span></button>
+    <button class="menu-i" id="menu-report" onclick="goScreen('report')"><span id="mi-report"></span>Relatórios</button>
     <button class="menu-i" id="menu-conta" onclick="goScreen('conta')"><span id="mi-conta"></span>Conta</button>
     <div id="menu-nuvem" style="margin-top:14px;padding:10px 11px;border-radius:9px;font-size:11.5px;font-weight:600"></div>
   </nav>
@@ -484,6 +524,11 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
       <div id="loan-list"></div>
     </div>
 
+    <!-- INADIMPLENTES — tela própria desde 22/09/2026 (bloco 4 da remodelação).
+         Container SÓ DELA: antes ela escrevia dentro do #loan-list da tela de
+         Clientes, e as duas brigavam pelo mesmo espaço sem ninguém ver. -->
+    <div id="screen-inad" class="screen"><div id="inad-list"></div></div>
+
     <!-- RECEBER -->
     <div id="screen-receber" class="screen"><div id="receber-content"></div></div>
 
@@ -503,7 +548,8 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
  <nav class="tabs" aria-label="Navegação principal">
    <button class="tab" id="nav-home" onclick="goScreen('home')"><span id="ti-home"></span>Carteira</button>
    <button class="tab" id="nav-clients" onclick="goScreen('clients')"><span id="ti-clients"></span>Clientes</button>
-   <button class="tab" id="nav-report" onclick="goScreen('report')"><span id="ti-report"></span>Números</button>
+   <button class="tab" id="nav-inad" onclick="goScreen('inad')"><span id="ti-inad"></span>Inadimplentes<span class="tab-badge" id="inad-badge" style="display:none"></span></button>
+   <button class="tab" id="nav-report" onclick="goScreen('report')"><span id="ti-report"></span>Relatórios</button>
    <button class="tab" id="nav-conta" onclick="goScreen('conta')"><span id="ti-conta"></span>Conta</button>
  </nav>
 </div>
@@ -582,6 +628,9 @@ var currentFilter='all',currentScreen='home';
 var expandedGroups={},expandedCards={},expandedClientHistory={},deleteConfirm=null;
 var appUnlocked=false,pinBuffer='',pinMode='check',pinNewTemp='';
 var _searchQuery='';
+// Carteira (21/09/2026): mes escolhido em Lucro mensal (null = mes corrente),
+// se a lista de meses esta aberta, e se a lista de vencimentos esta inteira.
+var _homeMes=null,_homeMesAberto=false,_homeVerTodos=false;
 var PIN_KEY='emp_pin_v3';
 var formData={};
 
@@ -782,7 +831,8 @@ function tombstones(){
     if(!t||!t.table||!t.id)return;
     var at=Date.parse(t.at||'');
     if(isNaN(at))at=Date.now();
-    if(at>=limite)keep.push({table:t.table,id:t.id,at:t.at||new Date(at).toISOString()});
+    if(at>=limite)keep.push({table:t.table,id:t.id,at:t.at||new Date(at).toISOString(),
+      aplicado:!!t.aplicado});   // M5 — a marca precisa sobreviver a limpeza
   });
   if(keep.length!==arr.length)_lsSet(TOMB_KEY,keep);
   return keep;
@@ -803,6 +853,30 @@ function dropTombstones(table,ids){
 }
 function tombIds(table){
   return tombstones().filter(function(t){return t.table===table;}).map(function(t){return t.id;});
+}
+// ============================================================
+// M5 — O APAGADO NAO PODE SER ESQUECIDO (22/09/2026)
+// ============================================================
+// O QUE ESTAVA ERRADO: depois de apagar a linha na nuvem, o app jogava fora a
+// propria anotacao de que tinha apagado ("exclusao aplicada na nuvem: pode
+// esquecer"). So que o OUTRO aparelho continuava com a linha guardada e, na
+// sincronizacao seguinte, devolvia ela para a nuvem. Sem a anotacao, este
+// aparelho recebia de volta como novidade. O registro ressuscitava.
+// Aconteceu duas vezes com o mesmo emprestimo do Diogo, em 21 e 22/09/2026.
+//
+// AGORA: a anotacao fica os 90 dias inteiros. So ganha a marca `aplicado`, que
+// diz "ja mandei apagar na nuvem, nao precisa mandar de novo" -- mas continua
+// valendo como "nao aceite este id de volta".
+function tombIdsPendentes(table){
+  return tombstones().filter(function(t){return t.table===table&&!t.aplicado;})
+    .map(function(t){return t.id;});
+}
+function marcarTombAplicado(table,ids){
+  var arr=tombstones(),mudou=false;
+  arr.forEach(function(t){
+    if(t.table===table&&ids.indexOf(t.id)>=0&&!t.aplicado){t.aplicado=true;mudou=true;}
+  });
+  if(mudou)_lsSet(TOMB_KEY,arr);
 }
 function isTomb(table,id){return tombIds(table).indexOf(id)>=0;}
 // Quantos lancamentos ainda nao chegaram na nuvem (aparece no aviso de sincronizacao)
@@ -890,18 +964,21 @@ function _pushTable(table, rows, ids){
     // so limpa a marca de pendente do que realmente foi enviado e aceito
     clearDirty(table, pend.filter(function(id){return ids.indexOf(id)>=0;}));
     // apaga na nuvem apenas os ids que o usuario apagou aqui (e que nao voltaram a existir)
-    var del = tombIds(table).filter(function(id){return ids.indexOf(id)<0;});
+    // M5 — so o que ainda nao foi aplicado na nuvem precisa de viagem.
+    var del = tombIdsPendentes(table).filter(function(id){return ids.indexOf(id)<0;});
     if(!del.length)return;
     return Promise.resolve(sb.from(table).delete().eq('user_id',cloudUser).in('id',del))
       .then(function(r2){
         if(r2&&r2.error)throw r2.error;
-        dropTombstones(table,del); // exclusao aplicada na nuvem: pode esquecer
+        // M5 — NAO esquece mais. So marca que a viagem ja foi feita. A anotacao
+        // continua barrando o id se ele tentar voltar pelo outro aparelho.
+        marcarTombAplicado(table,del);
       });
   });
 }
 // Junta nuvem + aparelho SEM perder o que foi feito offline.
 // so na nuvem -> entra | so no aparelho -> fica (e sobe) | nos dois -> sujo vence local, senao vence a nuvem
-function _mergeTable(table,cloudArr,localArr){
+function _mergeTable(table,cloudArr,localArr,nuvemRespondeu){
   var out=[],seen={},localById={};
   (localArr||[]).forEach(function(o){if(o&&o.id)localById[o.id]=o;});
   (cloudArr||[]).forEach(function(c){
@@ -915,10 +992,71 @@ function _mergeTable(table,cloudArr,localArr){
     if(!l||!l.id||seen[l.id])return;
     if(isTomb(table,l.id))return;
     seen[l.id]=1;
+    // ============================================================
+    // M5 — O QUE SUMIU DA NUVEM FOI APAGADO EM OUTRO APARELHO (22/09/2026)
+    // ============================================================
+    // Antes, TUDO que existia so aqui era tratado como novidade deste aparelho
+    // e reenviado. Era a segunda metade da ressurreicao: o aparelho que ainda
+    // tinha a linha devolvia ela para a nuvem depois de o outro ter apagado.
+    //
+    // O criterio para separar os dois casos e a marca de PENDENTE:
+    //   pendente  -> foi criado ou alterado AQUI e ainda nao subiu. Fica e sobe.
+    //   nao pendente -> ja veio da nuvem um dia e agora nao esta mais la.
+    //                   Alguem apagou no outro aparelho. NAO reenvia.
+    //
+    // O registro nao e jogado fora: vai para a lixeira de 30 dias, e o dono e
+    // avisado na tela. Se este julgamento estiver errado, ele traz de volta.
+    //
+    // TRAVA DE SEGURANCA: `nuvemRespondeu` so e verdadeiro quando a busca deu
+    // certo E a conta tem dados na nuvem (cloudPull ja tratou o caso da nuvem
+    // inteira vazia num ramo separado, que semeia em vez de apagar). Sem essa
+    // confirmacao NADA e apagado -- e o caso de RLS mal configurada, tabela
+    // recem-criada ou primeira sincronizacao.
+    // NAO testar `cloudArr.length` aqui: a tabela desta chamada pode estar
+    // legitimamente vazia por ter acabado de perder o ultimo registro, que e
+    // exatamente o caso do Diogo.
+    if(!isDirty(table,l.id) && nuvemRespondeu===true){
+      _sumiramNaNuvem.push({table:table,registro:l});
+      return;                               // sai de `out`: nao fica e nao sobe
+    }
     markDirty(table,[l.id]);                // so existe aqui: precisa subir
     out.push(l);
   });
   return out;
+}
+// M5 — fila dos registros que sumiram da nuvem, preenchida por _mergeTable e
+// esvaziada logo depois da fusao, por _guardarOsQueSumiram.
+var _sumiramNaNuvem=[];
+function _tipoDaTabela(t){
+  return t==='emprestimos'?'emprestimo':t==='clientes'?'cliente'
+    :t==='inadimplentes'?'inadimplente':'';
+}
+// Guarda na lixeira de 30 dias tudo que sumiu da nuvem, e avisa o dono.
+// Nunca apaga de vez: quem decide e ele.
+function _guardarOsQueSumiram(){
+  if(!_sumiramNaNuvem.length)return Promise.resolve();
+  var fila=_sumiramNaNuvem.slice();
+  _sumiramNaNuvem=[];
+  var nomes=[];
+  return Promise.all(fila.map(function(x){
+    var tipo=_tipoDaTabela(x.table);
+    if(!tipo)return Promise.resolve();
+    if(x.registro&&x.registro.name)nomes.push(x.registro.name);
+    // o id vira tombstone tambem: assim ele nao volta na proxima fusao
+    addTombstone(x.table,x.registro.id);
+    marcarTombAplicado(x.table,[x.registro.id]);  // ja nao esta na nuvem
+    return guardarNaLixeira(tipo,x.registro).then(function(){return true;},function(e){
+      if(typeof console!=='undefined'&&console.error)console.error('lixeira/sumiu',e);
+      return false;
+    });
+  })).then(function(){
+    if(typeof showToast==='function'){
+      var q=fila.length;
+      showToast(q+(q===1?' registro foi apagado':' registros foram apagados')
+        +' em outro aparelho'+(nomes.length?' ('+nomes.slice(0,3).join(', ')+')':'')
+        +'. Estao na lixeira por 30 dias.','error');
+    }
+  });
 }
 // Baixa os dados da nuvem e FUNDE com o aparelho (nunca substitui).
 // Se a nuvem estiver vazia e o aparelho tiver dados, envia os do aparelho (primeira vez).
@@ -945,9 +1083,13 @@ function cloudPull(){
       markDirty('inadimplentes',(inadimplentes||[]).map(function(i){return i.id;}));
       return cloudPush().then(function(){migrateDocsToCloud();setSync('Dados enviados para a nuvem ✓',true);});
     }
-    loans=_mergeTable('emprestimos',cl.map(rowToLoan),loans);
-    clients=_mergeTable('clientes',cc.map(rowToClient),clients);
-    inadimplentes=_mergeTable('inadimplentes',ci.map(rowToInad),inadimplentes);
+    _sumiramNaNuvem=[];                       // M5 — fila limpa antes de cada fusao
+    // Chegar aqui ja significa que a nuvem respondeu e NAO esta inteira vazia:
+    // o ramo de cima cuidou desse caso. Por isso o `true`.
+    loans=_mergeTable('emprestimos',cl.map(rowToLoan),loans,true);
+    clients=_mergeTable('clientes',cc.map(rowToClient),clients,true);
+    inadimplentes=_mergeTable('inadimplentes',ci.map(rowToInad),inadimplentes,true);
+    _guardarOsQueSumiram();                   // M5 — lixeira + aviso, sem travar a fusao
     migrateLoans(loans);
     _ledgerInvalidate();               // veio coisa nova da nuvem: refaz o razao
     _saveLocal(); _saveInadLocal();
@@ -2006,6 +2148,47 @@ function jurosRecPeriodo(loan,start,end){
 }
 // Juros recebido na vida toda (Relatório, cartão do cliente).
 function loanJuros(loan){return ledger(loan).jurosRecebido;}
+// Recebido (dinheiro que de fato entrou) dentro de um periodo [de, ate).
+// Espelho exato de jurosRecPeriodo: mesma janela, mesmo tratamento de estorno.
+// Soma o pagamento INTEIRO (juro + abatimento) em vez de so a parte de juro.
+// Estorno "somenteRastro" NAO desconta, pelo mesmo motivo que nao desconta no
+// ledger: o pagamento ja foi apagado da base e o dinheiro ja saiu das contas.
+// Criada em 21/09/2026 para o "Voltou" dos Relatorios, que precisa respeitar
+// o periodo escolhido -- recebidoTotal e a vida toda do emprestimo.
+function recebidoNoPeriodo(loan,de,ate){
+  return _r2(ledger(loan).linhas.reduce(function(s,l){
+    var d=l.data;
+    if(!d)return s;
+    if(de&&d<de)return s;                    // janela [de, ate): fim exclusivo
+    if(ate&&!(d<ate))return s;
+    if(l.tipo&&l.tipo.indexOf('pagamento')>=0)return s+l.valor;
+    if(l.tipo==='estorno'&&!l.somenteRastro)return s-l.valor;
+    return s;
+  },0));
+}
+// Lucro (juro recebido) de um mes qualquer. NAO e conta nova: e jurosRecPeriodo
+// com a janela do mes escolhido em vez do mes corrente. mes vai de 0 a 11.
+function lucroDoMes(ano,mes){
+  function _p2(n){return String(n).padStart(2,'0');}
+  var ini=ano+'-'+_p2(mes+1)+'-01';
+  var fim=(mes===11?(ano+1)+'-01-01':ano+'-'+_p2(mes+2)+'-01');
+  return _r2(allRecords().reduce(function(t,l){return t+jurosRecPeriodo(l,ini,fim);},0));
+}
+// Capital deste emprestimo ainda na rua: o que saiu do bolso menos o que o
+// cliente ja ABATEU de verdade. Nao confundir com ledger().emRisco, que e uma
+// conta de CAIXA (capital menos TUDO que entrou, juro inclusive) e por isso
+// encolhe quando o cliente paga so o juro -- chegando a zero com o dinheiro
+// ainda inteiro na mao dele.
+// Decidido por Cortes em 22/09/2026 (opcao A): o indicador "Dinheiro
+// emprestado" da Carteira usa ESTA conta, porque o nome responde "quanto do
+// meu dinheiro esta na rua". emRisco continua existindo e nao foi alterado.
+function capitalNaRua(loan){
+  var g=ledger(loan);
+  return _r2(Math.max(0,g.capitalEmprestado-g.capitalAbatido));
+}
+var MES_NOME=['Janeiro','Fevereiro','Marco','Abril','Maio','Junho','Julho',
+              'Agosto','Setembro','Outubro','Novembro','Dezembro'];
+var MES_CURTO=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
 // ===== LEGADO — mantidos só para auditoria e para a bateria de testes =====
 // NÃO use estes dois em cálculo financeiro novo: eles são justamente o modelo
 // errado que o ledger substituiu (aplicam a taxa de hoje sobre todo o passado
@@ -2064,6 +2247,23 @@ function _ultimoEventoData(l){
 // renovado ele é a data da última rolagem, não a do empréstimo. O lançamento
 // 'emprestimo' no histórico, esse, nunca se move. Só cai no startDate em
 // registro antigo que não tem esse lançamento.
+// O VENCIMENTO QUE ESTAVA VALENDO NA HORA DO PAGAMENTO (22/09/2026).
+// É a única forma honesta de, mais tarde, saber se o cliente pagou no dia ou
+// atrasou. Perguntar depois não adianta: `loan.dueDate` é reescrito pela
+// renovação (`_doRenewExec`), pela edição (`saveEdit`, que nem deixa
+// lançamento), pelo juro da parcela vencida e pelo descongelamento do
+// inadimplente. Tem que ser gravado no instante, dentro do próprio pagamento.
+// Campo novo dentro do JSON que já existe — nenhuma coluna nova no banco.
+// PARCELADO FICA DE FORA DE PROPÓSITO: ali `loan.dueDate` é o vencimento da
+// PRÓXIMA parcela em aberto, já rolado por `accrueParcelas`, e não o
+// compromisso que está sendo pago. Gravar isso seria gravar um número errado
+// com cara de certo — o erro dá múltiplo de 30 dias e sempre a favor do
+// cliente. Melhor não ter o dado do que ter o dado torto.
+function _vencAgora(loan){
+  if(!loan)return '';
+  if(loan.parcelas&&loan.parcelas.length)return '';
+  return loan.dueDate||'';
+}
 function _dataDoEmprestimo(l){
   var d='';
   ((l&&l.history)||[]).forEach(function(h){
@@ -2187,24 +2387,9 @@ function previaPagamento(loan,valor){
 // do que saiu não "enche demais"; o excedente é juro e aparece no juro ganho.
 // Os três números em linhas de tabela (não em cartão dentro de cartão), com a
 // barra de recuperação embaixo. Só desenha: as contas vêm prontas de quem chama.
-function _capitalBox(cap,rec,risco){
-  cap=_r2(cap);rec=_r2(rec);risco=_r2(risco);
-  var pct=cap>0?Math.min(100,Math.round((rec/cap)*100)):(rec>0?100:0);
-  var corpo=kv('Tirei do bolso',din(cap,13.5))
-    + kv('Já voltou',din(rec,13.5,'var(--gr)'))
-    + kv('Ainda em risco',din(risco,15.5,risco>0?'var(--am)':'var(--gr)'),true);
-  if(cap>0&&risco<=0){
-    corpo+='<div style="padding:12px 14px;font-size:12.5px;font-weight:600;color:var(--gr)">'
-      +'✓ Capital recuperado — daqui pra frente é só ganho</div>';
-  }else if(cap>0){
-    corpo+='<div style="padding:12px 14px">'
-      +'<div style="height:7px;background:var(--pn2);border-radius:4px;overflow:hidden">'
-      +'<div style="height:100%;width:'+pct+'%;background:var(--am);border-radius:4px"></div></div>'
-      +'<div style="font-size:12.5px;color:var(--dim);margin-top:8px;font-weight:600">'
-      +'Faltam '+fmt(risco)+' para você não ter mais nada a perder com este cliente.</div></div>';
-  }
-  return '<div class="bloco">'+corpo+'</div>';
-}
+// O antigo "_capitalBox" (Tirei do bolso / Ja voltou / Ainda em risco) saiu em
+// 22/09/2026: quem mostra esses numeros agora e o Resumo, dentro do Historico
+// da ficha, com os rotulos que o dono pediu. Nenhuma conta foi perdida.
 function descontosPeriodo(loan,from,to){
   return (loan&&loan.history||[]).reduce(function(s,h){
     return (h.type==='desconto'&&inRange(h.date,from,to))?s+(h.value||0):s;
@@ -2282,12 +2467,21 @@ function waLink(phone){
 // ============================================================
 // NAVEGAÇÃO — quatro abas e três telas empilhadas
 // ============================================================
-// Abas: home (Carteira) · clients · report (Números) · conta
+// Abas: home (Carteira) · clients · inad (Inadimplentes) · report (Relatórios) · conta
 // Empilhadas (com voltar): cliente (ficha) · receber · (o formulário é janela)
-var ABAS=['home','clients','report','conta'];
-var TELAS=['home','clients','cliente','receber','report','conta'];
-var TITULO={home:'Carteira',clients:'Clientes',report:'Números',conta:'Conta',
-            cliente:'Cliente',receber:'Receber'};
+// A quinta aba entrou em 22/09/2026 (bloco 4 da remodelação). O risco registrado
+// no escopo é o polegar: cinco colunas numa tela de 320px. A fonte do rótulo
+// encolhe no CSS para "Inadimplentes" caber sem quebrar em duas linhas.
+var ABAS=['home','clients','inad','report','conta'];
+var TELAS=['home','clients','inad','cliente','receber','report','conta'];
+var TITULO={home:'Carteira',clients:'Clientes',inad:'Inadimplentes',
+            report:'Relatórios',conta:'Conta',cliente:'Cliente',receber:'Receber'};
+// O app está numa tela de computador? Vale para o layout de três colunas.
+// Protegido porque a bancada de testes roda sem janela de verdade.
+function _ehComputador(){
+  try{return !!(typeof window!=='undefined'&&window.matchMedia
+    &&window.matchMedia('(min-width:900px)').matches);}catch(e){return false;}
+}
 var clienteAtual='';        // chave do cliente aberto na ficha
 var receberId=null;         // empréstimo aberto na tela Receber
 var _voltarPara='clients';  // para onde o botão de voltar leva
@@ -2297,9 +2491,18 @@ function goScreen(name){
   if(typeof _fecharTeclado==='function')_fecharTeclado(); // trocar de tela desce o teclado
   currentScreen=name;
   var i,el;
+  // ERRO 25, corrigido em 22/09/2026 (era pré-existente, não veio da remodelação).
+  // No computador a ficha do cliente mora no painel da DIREITA, fora da coluna
+  // do meio. Ir para ela apagava a coluna do meio inteira: goScreen tirava o
+  // `active` da lista de clientes e nada mais acendia ali. Como a ficha não
+  // disputa espaço com a lista — é outra coluna —, a lista continua acesa.
+  // NÃO vale para `receber`, que mora DENTRO da coluna do meio: acender as duas
+  // empilharia uma tela embaixo da outra. Só `cliente`, e só no computador.
+  var fundoDesk=(name==='cliente'&&_ehComputador())?'clients':null;
   for(i=0;i<TELAS.length;i++){
     el=document.getElementById('screen-'+TELAS[i]);
-    if(el&&el.classList)el.classList[TELAS[i]===name?'add':'remove']('active');
+    if(el&&el.classList)
+      el.classList[(TELAS[i]===name||TELAS[i]===fundoDesk)?'add':'remove']('active');
   }
   // aba acesa: as telas empilhadas mantêm acesa a aba de onde vieram
   var aba=(name==='cliente'||name==='receber')?'clients':name;
@@ -2313,8 +2516,12 @@ function goScreen(name){
   pintarTopo();
   if(name==='home')renderHome();
   if(name==='clients')renderLoanList(_searchQuery);
+  if(name==='inad')renderInad();
   if(name==='report')renderReport();
   if(name==='cliente')renderCliente();
+  // A lista que ficou acesa atrás da ficha no computador tem que ser redesenhada
+  // junto, senão ela congela no estado antigo e mostra número velho.
+  if(fundoDesk==='clients')renderLoanList(_searchQuery);
   if(name==='receber')renderReceber();
   if(name==='conta')renderConta();
   if(typeof window!=='undefined'&&window.scrollTo)window.scrollTo(0,0);
@@ -2326,11 +2533,14 @@ function goScreen(name){
 function pintarTopo(){
   var t=document.getElementById('topo-tit'),k=document.getElementById('topo-kick'),
       b=document.getElementById('btn-voltar');
-  var empilhada=(currentScreen==='cliente'||currentScreen==='receber');
-  if(t)t.textContent=empilhada?(currentScreen==='receber'?'Receber':(_nomeDoCliente(clienteAtual)||'Cliente'))
-                              :(TITULO[currentScreen]||'Empréstimos');
-  var kick=empilhada?(currentScreen==='receber'?'Pagamento':'Ficha do cliente')
-                    :(currentScreen==='home'?'Controle de empréstimos':'');
+  // No computador a ficha é um painel AO LADO da lista, não uma tela por cima
+  // dela: o cabeçalho continua sendo o da lista e não há "voltar" para onde ir.
+  var tela=(currentScreen==='cliente'&&_ehComputador())?'clients':currentScreen;
+  var empilhada=(tela==='cliente'||tela==='receber');
+  if(t)t.textContent=empilhada?(tela==='receber'?'Receber':(_nomeDoCliente(clienteAtual)||'Cliente'))
+                              :(TITULO[tela]||'Empréstimos');
+  var kick=empilhada?(tela==='receber'?'Pagamento':'Ficha do cliente')
+                    :(tela==='home'?'Controle de empréstimos':'');
   if(k){k.textContent=kick;k.style.display=kick?'block':'none';}
   if(b&&b.style)b.style.display=empilhada?'flex':'none';
 }
@@ -2339,6 +2549,12 @@ function voltar(){
   goScreen(_voltarPara||'clients');
 }
 function abrirCliente(key,de){
+  // Ficha nova abre sempre fechada: trocar de cliente não pode deixar aberto
+  // o empréstimo, o histórico ou os documentos do cliente anterior.
+  if(clienteAtual!==key){
+    fichaLoanId=null;fichaExtratoId=null;
+    expandedClientHistory={};expandedClientDocs={};
+  }
   clienteAtual=key;
   _voltarPara=de||'clients';
   goScreen('cliente');
@@ -2363,8 +2579,10 @@ function _nomeDoCliente(key){
 function pintarIcones(){
   var mapa=[['btn-voltar',I.back,20],['btn-busca',I.search,20],
     ['busca-ico',I.search,17],
-    ['ti-home',I.home,20],['ti-clients',I.users,20],['ti-report',I.chart,20],['ti-conta',I.gear,20],
-    ['mi-home',I.home,17],['mi-clients',I.users,17],['mi-report',I.chart,17],['mi-conta',I.gear,17]];
+    ['ti-home',I.home,20],['ti-clients',I.users,20],['ti-inad',I.alert,20],
+    ['ti-report',I.chart,20],['ti-conta',I.gear,20],
+    ['mi-home',I.home,17],['mi-clients',I.users,17],['mi-inad',I.alert,17],
+    ['mi-report',I.chart,17],['mi-conta',I.gear,17]];
   mapa.forEach(function(x){
     var el=document.getElementById(x[0]);
     if(el)el.innerHTML=sv(x[1],x[2]);
@@ -2377,7 +2595,10 @@ function renderAll(){
   renderHome();
   updateInadBadge();
   if(currentScreen==='clients')renderLoanList(_searchQuery);
+  if(currentScreen==='inad')renderInad();
   if(currentScreen==='report')renderReport();
+  // no computador a lista fica acesa atrás da ficha: redesenha junto
+  if(currentScreen==='cliente'&&_ehComputador())renderLoanList(_searchQuery);
   if(currentScreen==='cliente')renderCliente();
   if(currentScreen==='receber')renderReceber();
   if(currentScreen==='conta')renderConta();
@@ -2414,11 +2635,17 @@ function _deleteLoanExec(id){
 
 // A contagem de inadimplentes vive no chip do filtro (a aba própria acabou).
 // Quando a tela Clientes não está montada, não há o que atualizar.
+// A contagem mora na ABA desde 22/09/2026 (antes vivia no chip da tela de
+// Clientes, que deixou de existir). São dois lugares: a aba do celular e o
+// menu do computador — os dois têm que dizer a mesma coisa.
 function updateInadBadge(){
-  var b=document.getElementById('inad-badge');
-  if(!b)return;
-  if(inadimplentes.length>0){b.textContent=inadimplentes.length;b.style.display='inline-flex';}
-  else b.style.display='none';
+  var n=(inadimplentes||[]).length, ids=['inad-badge','inad-badge-desk'], i, b;
+  for(i=0;i<ids.length;i++){
+    b=document.getElementById(ids[i]);
+    if(!b)continue;
+    b.textContent=n>99?'99+':String(n);
+    if(b.style)b.style.display=n?'flex':'none';
+  }
 }
 
 // ============================================================
@@ -2858,6 +3085,20 @@ function saldoGrupo(g){
 function inicial(n){return String(n||'?').trim().charAt(0).toUpperCase();}
 // Data curta (dd/mm) — nas linhas o ano só rouba espaço de quem precisa dele.
 function _dm(iso){var p=String(iso||'').split('-');return p.length===3?(p[2]+'/'+p[1]):'';}
+// Frase de vencimento das linhas, num lugar só — a mesma informação não pode
+// ser lida de dois jeitos em duas telas.
+// `comDias` só quando a linha NÃO tem o selo de dias do lado direito. Com o
+// selo, escrever "faltam 3 dias" ao lado de "em 3d" é dizer duas vezes a mesma
+// coisa gastando justamente a largura de que o vencimento precisa no celular
+// estreito — em 320px isso apagava a data inteira (QA de 22/09/2026).
+function _fraseVence(l,comDias){
+  var d=daysUntil(l.dueDate),ab=Math.abs(d);
+  if(d===0)return 'vence hoje';
+  if(!comDias)return (d<0?'venceu ':'vence ')+_dm(l.dueDate);
+  if(d<0)return 'venceu '+_dm(l.dueDate)+' · '+ab+' dia'+(ab>1?'s':'')+' atrás';
+  if(d===1)return 'vence '+_dm(l.dueDate)+' · amanhã';
+  return 'vence '+_dm(l.dueDate)+' · faltam '+d+' dias';
+}
 
 // Barra lateral + fundo do avatar de acordo com a situação
 // A linha inteira é tocável (o ::after do botão principal cobre a linha), mas
@@ -2875,107 +3116,100 @@ function _linhaFecha(resto){return '</button>'+resto+'</div>';}
 function renderHome(){
   var s=calcStats();
   var ativos=loans.filter(function(l){return !l.paid;});
-  var cobrar=ativos.filter(function(l){var d=daysUntil(l.dueDate);return d<=0;})
-    .sort(function(a,b){return new Date(a.dueDate)-new Date(b.dueDate);});
-  var emdia=ativos.filter(function(l){return daysUntil(l.dueDate)>0;})
-    .sort(function(a,b){return new Date(a.dueDate)-new Date(b.dueDate);});
-  var totalCobrar=_r2(cobrar.reduce(function(t,l){return t+getBalance(l);},0));
+
+  // VENCIMENTOS -- uma lista so (decisao do dono, 21/09/2026).
+  // Antes eram duas: "Cobrar hoje" e "Em dia". Viraram uma, em ordem de data,
+  // com CINCO por vez. A cor da barra lateral diz a situacao; quem esta vencido
+  // ou vence hoje ganha o botao Receber na propria linha.
+  var fila=ativos.slice().sort(function(a,b){return new Date(a.dueDate)-new Date(b.dueDate);});
+  var mostra=_homeVerTodos?fila:fila.slice(0,5);
   var html='';
 
-  // Inadimplentes NÃO aparecem aqui — a pedido do dono, eles vivem só no
-  // filtro da lista de clientes, para a Carteira ficar com quem ainda paga.
+  // TOTAL A RECEBER -- centralizado, a pedido do dono. E o numero que ele fala
+  // ao telefone. Mesmo valor de sempre: calcStats().totalOwed, so dos ativos.
+  html+='<div class="hero-c">'
+    +'<div class="tile-l">Total a receber</div>'
+    +'<div class="hero-n">'+dinK(s.totalOwed)+'</div>'
+    +'<div class="hero-s">o que emprestei mais o juro, de quem ainda paga</div>'
+    +'</div>';
 
-  // Os quatro números que cabem numa olhada.
+  // DINHEIRO EMPRESTADO -- quanto do dinheiro do dono esta na rua agora.
+  // OPCAO A, decidida por Cortes em 22/09/2026, depois que a bancada mostrou o
+  // problema: a conta antiga (emRisco) desconta TUDO que entrou, juro inclusive.
+  // Um cliente que paga so o juro faria o indicador encolher todo mes e chegar a
+  // ZERO com os mil reais ainda inteiros na mao dele. Sob o nome "Dinheiro
+  // emprestado" isso seria mentira.
+  // Agora conta capital emprestado menos capital ABATIDO, cliente a cliente,
+  // somando ativos e inadimplentes pelo MESMO criterio -- que e a coerencia
+  // exigida pela C7 de 10/09. O inadimplente entra so pelo capital, como o dono
+  // decidiu em 21/09: o saldo com juro dele nao e dinheiro que se espera.
+  var naRua=_r2(allRecords().filter(function(l){return l&&!l.paid;})
+    .reduce(function(t,l){return t+capitalNaRua(l);},0));
   html+='<div class="tiles">'
-    + tile('A receber',dinK(s.totalOwed),'var(--tx)',"goScreen('clients')")
-    + tile('Vencido',dinK(s.totalOverdue),s.totalOverdue>0?'var(--rd)':'var(--dim2)',"filtrarClientes('overdue')")
-    + tile('Lucro do mês',dinK(s.lucroM),'var(--gr)',"goScreen('report')")
-    + tile('Em risco',dinK(s.emRisco),s.emRisco>0?'var(--am)':'var(--gr)',"goScreen('report')")
+    + tile('Dinheiro emprestado',dinK(naRua),'var(--tx)')
+    + tile('Lucro geral',dinK(s.juros),'var(--gr)',"goScreen('report')")
     +'</div>';
 
-  // M1 — BLOCO "PROVAVELMENTE PERDIDO" (20/09/2026, decisao do dono).
-  // Saiu daqui a linha antiga da C7 ("Inclui R$ X parados com N inadimplentes"):
-  // ela existia para explicar um inadimplente que estava DENTRO dos quatro
-  // numeros de cima. Agora ele nao esta mais dentro, entao a frase mentiria.
-  //
-  // No lugar dela, o numero aparece SEPARADO — porque esconder do total e
-  // escolha do dono, mas sumir com o dinheiro nao e. O bloco mostra as duas
-  // coisas que importam: o saldo que o app diz que ele deve, e quanto DISSO
-  // saiu do bolso do dono (o resto e juro que so existe no papel).
-  //
-  // Cor: ambar/vermelho, que e a cor de SITUACAO. O dourado (--ac) e so de
-  // dinheiro-acao-principal e nao entra aqui. Toca e vai para a lista de
-  // inadimplentes. Some inteiro quando nao ha nenhum.
-  if(s.inadCount>0){
-    var corPerd=s.inadCapital>0.009?'var(--rd)':'var(--am)';
-    html+='<button onclick="filtrarClientes(\'inad\')" '
-      +'style="display:block;width:calc(100% - 28px);margin:8px 14px 0;text-align:left;'
-      +'background:transparent;border:1px solid var(--ln2);border-radius:10px;'
-      +'padding:9px 12px;font:inherit;cursor:pointer;opacity:.82">'
-      +'<div style="font-size:11.5px;font-weight:700;color:'+corPerd+';letter-spacing:.2px">'
-      +'Provavelmente perdido</div>'
-      +'<div style="font-size:11.5px;color:var(--dim2);margin-top:3px;line-height:1.5">'
-      + s.inadCount+(s.inadCount===1?' cliente':' clientes')
-      +' · saldo '+fmt(s.inadSaldo)
-      +' · do seu bolso: '+fmt(s.inadCapital)
-      +'</div></button>';
-  }
+  // LUCRO MENSAL -- abre e deixa escolher o mes (pedido do dono, 21/09/2026).
+  var mm=_homeMesEscolhido();
+  html+='<button class="mensal" onclick="toggleHomeMes()" aria-expanded="'+(_homeMesAberto?'true':'false')+'">'
+    +'<span class="mensal-e"><span class="tile-l">Lucro mensal</span>'
+    +'<span class="mensal-m">'+mm.rotulo+' '+(_homeMesAberto?'&#9652;':'&#9662;')+'</span></span>'
+    + din(mm.valor,19,mm.valor>0.009?'var(--gr)':'var(--dim2)',700)
+    +'</button>';
+  if(_homeMesAberto)html+=_homeMesesChips();
 
-  // O dinheiro do próprio bolso: quanto saiu, quanto já voltou, quanto ainda
-  // pode virar prejuízo. Mesma leitura da ficha do cliente, agora da carteira toda.
-  if(s.capitalEmRisco>0.009){
-    var pctRec=Math.min(100,Math.round((s.capitalRecuperado/s.capitalEmRisco)*100));
-    html+='<div class="sec"><span class="sec-t">Meu dinheiro na rua</span>'
-      +'<span style="font-size:11.5px;font-weight:600;color:'+(s.emRisco>0?'var(--am)':'var(--gr)')+'">'
-      +pctRec+'% recuperado</span></div>'
-      +'<div class="bloco">'
-      + kv('Tirei do bolso',din(s.capitalEmRisco,13.5))
-      + kv('Já voltou',din(s.capitalRecuperado,13.5,'var(--gr)'))
-      + kv('Ainda em risco',din(s.emRisco,15.5,s.emRisco>0?'var(--am)':'var(--gr)'),true)
-      +'<div style="padding:12px 14px">'
-      +'<div style="height:7px;background:var(--pn2);border-radius:4px;overflow:hidden">'
-      +'<div style="height:100%;width:'+pctRec+'%;background:'+(s.emRisco>0?'var(--am)':'var(--gr)')
-      +';border-radius:4px"></div></div>'
-      +'<div style="font-size:12.5px;color:var(--dim);margin-top:8px;font-weight:600">'
-      +(s.emRisco>0
-        ? 'Faltam '+fmt(s.emRisco)+' voltarem para você não ter nada a perder.'
-        : 'Todo o dinheiro que saiu já voltou. O que entrar agora é lucro.')
-      +'</div></div></div>';
-  }
-
-  // Cobrar hoje: as pessoas antes do total, com o botão na própria linha.
-  html+='<div class="sec"><span class="sec-t">Cobrar hoje</span>'
-    +(cobrar.length?'<span style="font-size:11.5px;font-weight:600;color:var(--rd)">'
-      +cobrar.length+(cobrar.length>1?' cobranças · ':' cobrança · ')+fmt(totalCobrar)+'</span>':'')
+  html+='<div class="sec"><span class="sec-t">Vencimentos</span>'
+    +(fila.length>5
+      ?'<button class="sec-a" onclick="toggleHomeVerTodos()">'
+        +(_homeVerTodos?'ver menos':'ver todos '+fila.length+' \u2192')+'</button>'
+      :'')
     +'</div>';
-  if(!cobrar.length){
+  if(!fila.length){
     html+='<div class="bloco"><div class="vazio" style="padding:24px 18px">'
       +'<span style="color:var(--gr);display:flex;justify-content:center">'+sv(I.check,24)+'</span>'
-      +'<div class="vazio-t">Nada para cobrar hoje</div>'
-      +'<div style="font-size:12.5px;margin-top:2px">Ninguém está vencido nem vence hoje.</div></div></div>';
+      +'<div class="vazio-t">Nenhum emprestimo em aberto</div>'
+      +'<div style="font-size:12.5px;margin-top:2px">Toque no + la em cima para lancar o primeiro.</div>'
+      +'</div></div>';
   }else{
-    html+='<div class="bloco">'+cobrar.map(function(l){return linhaCobranca(l,true);}).join('')+'</div>';
-  }
-
-  // No computador a lista curta dá lugar à tabela completa.
-  if(emdia.length){
-    html+='<div class="sec so-cel"><span class="sec-t">Em dia</span>'
-      +'<button class="sec-a" onclick="goScreen(\'clients\')">ver todos →</button></div>'
-      +'<div class="bloco so-cel">'+emdia.slice(0,4).map(function(l){return linhaCobranca(l,false);}).join('')+'</div>';
-  }else if(!loans.length){
-    html+='<div class="bloco so-cel"><div class="vazio">'
-      +'<span style="color:var(--dim2);display:flex;justify-content:center">'+sv(I.users,26)+'</span>'
-      +'<div class="vazio-t">Nenhum empréstimo ainda</div>'
-      +'<div style="font-size:12.5px;margin-top:2px">Toque no + lá em cima para lançar o primeiro.</div></div></div>';
+    html+='<div class="bloco">'+mostra.map(function(l){
+      return linhaCobranca(l,daysUntil(l.dueDate)<=0);
+    }).join('')+'</div>';
   }
   html+=tabelaDesk();
   document.getElementById('home-content').innerHTML=html;
 }
+// Qual mes esta escolhido em Lucro mensal. Sem escolha, e o mes corrente.
+function _homeMesEscolhido(){
+  var a,m;
+  if(_homeMes){a=_homeMes.a;m=_homeMes.m;}
+  else{var d=new Date();a=d.getFullYear();m=d.getMonth();}
+  return {a:a,m:m,rotulo:MES_NOME[m]+' de '+a,valor:lucroDoMes(a,m)};
+}
+// Os doze ultimos meses, para escolher.
+function _homeMesesChips(){
+  var esc=_homeMesEscolhido(),hoje=new Date();
+  var out='<div class="chips" style="padding-top:10px">';
+  for(var i=0;i<12;i++){
+    var d=new Date(hoje.getFullYear(),hoje.getMonth()-i,1);
+    var on=(esc.a===d.getFullYear()&&esc.m===d.getMonth());
+    out+='<button class="chip" aria-pressed="'+on+'" onclick="setHomeMes('
+      +d.getFullYear()+','+d.getMonth()+')">'
+      +MES_CURTO[d.getMonth()]+'/'+String(d.getFullYear()).slice(2)+'</button>';
+  }
+  return out+'</div>';
+}
+function setHomeMes(a,m){_homeMes={a:a,m:m};renderAll();}
+function toggleHomeMes(){_homeMesAberto=!_homeMesAberto;renderAll();}
+function toggleHomeVerTodos(){_homeVerTodos=!_homeVerTodos;renderAll();}
 // Linha de um empréstimo na Carteira. Com ação = botão Receber na própria linha.
 function linhaCobranca(l,comAcao){
   var sit=sitLoan(l);
   var bal=getBalance(l);
-  var sub=l.interest+'% · '+(daysUntil(l.dueDate)<0?'venceu ':'vence ')+_dm(l.dueDate);
+  // Quatro informacoes por linha: nome, valor, vencimento e dias que faltam.
+  // A porcentagem saiu daqui em 21/09/2026 -- ela vive dentro da ficha.
+  // Com o botão Receber não há selo de dias à direita: aí a frase leva os dias.
+  var sub=_fraseVence(l,!!comAcao);
   return _linhaAbre(sit,"abrirCliente('"+_js(clientKey(l.name))+"','home')")
     +'<span class="linha-n">'+esc(l.name)+'</span>'
     +'<span class="linha-s">'+esc(sub)+'</span>'
@@ -3025,29 +3259,28 @@ function renderChips(){
   var el=document.getElementById('filtro-chips');
   if(!el)return;
   var c=contagens();
+  // O chip "Inadimplentes" SAIU em 22/09/2026: eles ganharam aba própria, e
+  // duas portas para a mesma sala é o jeito mais fácil de o dono achar que
+  // está vendo uma coisa quando está vendo outra. A contagem foi junto, para
+  // a etiqueta da aba (updateInadBadge).
   var defs=[['all','Todos',c.all],['overdue','Vencidos',c.overdue],['today','Hoje',c.today],
-            ['week','Semana',c.week],['paid','Quitados',c.paid],['inad','Inadimplentes',c.inad]];
+            ['week','Semana',c.week],['paid','Quitados',c.paid]];
   el.innerHTML=defs.map(function(d){
     var on=currentFilter===d[0];
-    var badge=(d[0]==='inad')
-      ? ' <span id="inad-badge" style="display:'+(c.inad?'inline-flex':'none')
-        +';align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;'
-        +'border-radius:9px;background:'+(on?'var(--acTx)':'var(--rd)')+';color:'+(on?'var(--ac)':'var(--bg)')
-        +';font-size:10px;font-weight:800">'+c.inad+'</span>'
-      : ' <span class="mono" style="font-weight:600;opacity:.75">'+d[2]+'</span>';
     return '<button class="chip" aria-pressed="'+on+'" onclick="setFilter(this,\''+d[0]+'\')">'
-      +d[1]+badge+'</button>';
+      +d[1]+' <span class="mono" style="font-weight:600;opacity:.75">'+d[2]+'</span></button>';
   }).join('');
-  // Traz o filtro ativo para dentro da tela: o de inadimplentes é o último da
-  // fila e ficava escondido, deixando a lista sem explicação.
   var ativo=el.querySelector&&el.querySelector('[aria-pressed="true"]');
   if(ativo&&el.scrollTo)el.scrollTo({left:Math.max(0,ativo.offsetLeft-14),behavior:'auto'});
 }
 function renderLoanList(search){
+  // Quem estiver com o filtro antigo de inadimplentes guardado volta para
+  // "Todos": o filtro não existe mais e ficar preso nele deixaria a lista
+  // vazia sem nenhum chip aceso explicando por quê.
+  if(currentFilter==='inad')currentFilter='all';
   renderChips();
   var container=document.getElementById('loan-list');
   if(!container)return;
-  if(currentFilter==='inad'){renderInad();return;}
   var gs=gruposDeClientes(loans).filter(function(g){return grupoCasa(g,currentFilter);});
   if(search){
     var sq=String(search).toLowerCase();
@@ -3071,48 +3304,49 @@ function renderLoanList(search){
     +'<div class="bloco">'+gs.map(renderGroup).join('')+'</div>';
 }
 
-// Linha de um cliente. O bloco expandido existe desde antes e é o MESMO
-// conteúdo da ficha — quem abre a ficha vê isto em tela cheia.
+// Linha de um cliente. Um cliente = UMA linha, mesmo com vários empréstimos.
+// BLOCO 2 DA REMODELAÇÃO (escopo aprovado em 21/09/2026), aplicado em 22/09/2026:
+// quatro informações por linha — nome · valor · vencimento · dias que faltam.
+// SAÍRAM daqui, de propósito: a porcentagem de juro e a etiqueta
+// "falta R$ X voltar". As duas passaram a viver dentro da ficha — a taxa no
+// empréstimo aberto, o risco dentro do Histórico. Motivo: a linha da lista é
+// para bater o olho e decidir a quem ligar hoje, não para conferir conta.
+// A frase de vencimento é a MESMA de `linhaCobranca` (Carteira), palavra por
+// palavra: a mesma informação não pode ser lida de dois jeitos no mesmo app.
 function renderGroup(group){
   var key=group.key;
   var sit=sitGrupo(group);
   var ativos=group.loans.filter(function(l){return !l.paid;});
   var saldo=saldoGrupo(group);
   var prox=ativos.slice().sort(function(a,b){return new Date(a.dueDate)-new Date(b.dueDate);})[0];
-  // Capital ainda exposto neste cliente (só os empréstimos ATIVOS). Soma
-  // emprestimo a emprestimo: um já recuperado não tapa o buraco de outro.
-  var riscoAtivo=_r2(ativos.reduce(function(s,l){return s+ledger(l).emRisco;},0));
-  var riscoTag='';
-  if(ativos.length){
-    riscoTag=riscoAtivo>0
-      ?'<span style="color:var(--am)">falta '+fmt(riscoAtivo)+' voltar</span>'
-      :'<span style="color:var(--gr)">✓ recuperado</span>';
+  var sub='quitado';
+  if(prox){
+    // Os dias que faltam vêm no selo da direita (sitTexto), não aqui: repetir
+    // apagava a data de vencimento no celular estreito.
+    sub=_fraseVence(prox,false);
+    // Vários empréstimos: uma linha só, com a soma e a data do que vence primeiro.
+    if(ativos.length>1)sub=ativos.length+' empréstimos · '+sub;
   }
-  var sub=ativos.length
-    ? (ativos.length>1?ativos.length+' empréstimos':(prox?prox.interest+'%':''))
-      +(prox?' · vence '+_dm(prox.dueDate):'')
-    : 'quitado';
-  var linha=_linhaAbre(sit,"abrirCliente('"+_js(key)+"')")
+  return _linhaAbre(sit,"abrirCliente('"+_js(key)+"')")
     +'<span class="linha-n">'+esc(group.name)+'</span>'
     +'<span class="linha-s">'+esc(sub)+'</span>'
-    +(riscoTag?'<span class="linha-s">'+riscoTag+'</span>':'')
     + _linhaFecha(
       '<span style="text-align:right">'
       +(saldo?din(saldo,15):'<span class="mono" style="color:var(--dim2)">—</span>')+'</span>'
       +'<span class="linha-st" style="color:'+corSit(sit)+'">'
       +(prox?sitTexto(prox):'quitado')+'</span>');
-  if(!expandedGroups[key])return linha;
-  // Expandido = a ficha inteira desenhada no lugar (mesmas peças, sem duplicar
-  // regra nenhuma). É por onde a bateria de testes olha o cartão do cliente.
-  return linha+'<div style="padding:2px 0 12px;border-bottom:1px solid var(--ln)">'
-    + fichaCorpo(key,{dentroDaLista:true})+'</div>';
 }
 
 // ============================================================
 // FICHA DO CLIENTE
 // ============================================================
-var fichaLoanId=null;    // qual empréstimo do cliente está aberto no extrato
-var fichaVerQuitados=false; // os quitados ficam escondidos até o dono pedir
+// ESTADO DA FICHA — bloco 3 da remodelação (22/09/2026).
+// Tudo nasce FECHADO. Foi correção expressa do dono em 21/09/2026 sobre a
+// primeira versão do protótipo: a ficha abre mostrando quanto a pessoa deve e
+// uma linha por empréstimo; o resto só aparece a quem tocar.
+var fichaLoanId=null;       // empréstimo aberto na ficha (null = todos fechados)
+var fichaExtratoId=null;    // de qual empréstimo o histórico está aberto
+var expandedClientDocs={};  // bloco Documentos aberto, por cliente
 function renderCliente(){
   var box=document.getElementById('cliente-content');
   if(!box)return;
@@ -3181,9 +3415,10 @@ function _docGrupoFichaHtml(key,campo,ultimo){
   }
   return h+'</div>';
 }
+// Só o miolo: o cabeçalho "Documentos" e o botão de abrir/fechar são do
+// chamador (bloco 4 da ficha), para não haver dois títulos iguais na tela.
 function fichaDocsHtml(key){
-  return '<div class="sec"><span class="sec-t">Documentos</span></div>'
-    +'<div class="bloco" style="padding:0;overflow:hidden">'
+  return '<div class="bloco" style="padding:0;overflow:hidden">'
     + _docGrupoFichaHtml(key,'docRG',false)
     + _docGrupoFichaHtml(key,'docResidencia',true)
     +'</div>';
@@ -3246,7 +3481,20 @@ function fichaCabecalho(key){
       +' onclick="sendWAGroup(\''+_js(key)+'\')">'+sv(I.wa,19)+'</button>':'')
     +'</div>';
 }
-// O corpo da ficha. `dentroDaLista` deixa as margens iguais às do cartão antigo.
+// ============================================================
+// O CORPO DA FICHA — bloco 3 da remodelação, escopo aprovado em 21/09/2026
+// ============================================================
+// Ordem, de cima para baixo, e não é negociável sem voltar ao escopo:
+//   1. Quanto ele deve no total
+//   2. Empréstimos em aberto, um por linha, FECHADOS. Tocar abre um só.
+//   3. Histórico do cliente, atrás de abrir/fechar: Resumo + Já quitou
+//   4. Documentos, atrás de abrir/fechar
+// O quadro "Meu dinheiro com este cliente" não existe mais solto: virou o
+// Resumo, dentro do Histórico, com os três números que o dono pediu —
+// Emprestei · Já me pagou · Só de juros.
+// NENHUMA conta nova foi escrita aqui: tudo sai de ledger() e getBalance(),
+// como antes. Trocaram de lugar e de rótulo, não de valor.
+// `op` continua na assinatura porque a bateria de testes chama fichaCorpo(key,{}).
 function fichaCorpo(key,op){
   op=op||{};
   var ls=_loansDoCliente(key);
@@ -3255,188 +3503,266 @@ function fichaCorpo(key,op){
       +'<div style="font-size:12.5px;margin-top:2px">Este cliente não tem lançamentos.</div></div>';
   }
   var ativos=ls.filter(function(l){return !l.paid;});
-  // Empréstimo em foco: o escolhido pelo seletor, senão o mais urgente.
-  var alvo=ls.find(function(l){return l.id===fichaLoanId;})||ativos[0]||ls[0];
+  var quitados=ls.filter(function(l){return l.paid;});
   var html='';
 
-  // ---- vários empréstimos: o total em cima, a lista embaixo ----
-  // Escolha do dono (opção B): a fileira de botões que rolava para o lado saiu.
-  // No lugar entra o que ele deve somando tudo — o número que se fala ao telefone —
-  // e uma linha fina por empréstimo, empilhadas, sem rolagem lateral.
-  var quitados=ls.filter(function(l){return l.paid;});
-  var visiveis=ativos.length?ativos:ls;
-  if(fichaVerQuitados)visiveis=ls;
-  if(visiveis.length>1){
-    var totalCli=_r2(visiveis.reduce(function(s,l){return s+(l.paid?0:getBalance(l));},0));
-    var maisVelho=visiveis.filter(function(l){return !l.paid;})
-      .sort(function(a,b){return new Date(a.dueDate)-new Date(b.dueDate);})[0];
-    var subTotal=visiveis.length+' empréstimos';
+  // ---- 1. QUANTO ELE DEVE NO TOTAL ----
+  // O número que se fala ao telefone. Soma o saldo dos empréstimos em aberto.
+  // Mesma conta de sempre (getBalance), agora sempre visível — antes só
+  // aparecia para quem tinha mais de um empréstimo.
+  var totalCli=_r2(ativos.reduce(function(s,l){return s+getBalance(l);},0));
+  if(ativos.length){
+    var maisVelho=ativos.slice().sort(function(a,b){
+      return new Date(a.dueDate)-new Date(b.dueDate);})[0];
+    var subTotal=ativos.length+' empréstimo'+(ativos.length>1?'s':'')+' em aberto';
     if(maisVelho){
       var dv=daysUntil(maisVelho.dueDate);
       subTotal+=dv<0?' · o mais antigo vencido há '+Math.abs(dv)+' dia'+(Math.abs(dv)>1?'s':'')
-        :dv===0?' · um vence hoje':' · o próximo vence em '+dv+' dia'+(dv>1?'s':'');
+        :dv===0?' · um vence hoje'
+        :' · o próximo vence em '+dv+' dia'+(dv>1?'s':'');
     }
     html+='<div class="bloco" style="margin-top:12px;padding:14px 15px">'
       +'<span class="rot">Deve no total</span>'
       +'<div style="margin:4px 0 2px">'+din(totalCli,30)+'</div>'
       +'<div style="font-size:12.5px;color:var(--dim)">'+esc(subTotal)+'</div></div>';
-
-    html+='<div class="sec"><span class="sec-t">Os empréstimos</span></div>'
-      +'<div class="bloco" style="padding:0;overflow:hidden">'
-      + visiveis.map(function(l,i){
-          var on=l.id===alvo.id, sl=sitLoan(l), dl=daysUntil(l.dueDate);
-          var quando=l.paid?'quitado':(dl<0?'venceu há '+Math.abs(dl)+'d':dl===0?'vence hoje':'vence em '+dl+'d');
-          return '<button class="emp-linha" aria-pressed="'+on+'"'
-            +' onclick="verEmprestimo(\''+_js(l.id)+'\')"'
-            +' style="border-left:3px solid '+corSit(sl)+';background:'+(on?'var(--acS)':'var(--pn)')
-            +(i<visiveis.length-1?';border-bottom:1px solid var(--ln)':'')+'">'
-            +'<span class="emp-linha-t">vence '+_dm(l.dueDate)
-              +' · <span style="color:'+corSit(sl)+';font-weight:600">'+esc(quando)+'</span></span>'
-            + din(l.paid?loanPrincipal(l):getBalance(l),14,on?'var(--ac)':'var(--tx)')
-            +'</button>';
-        }).join('')
-      +'</div>';
-  }
-  if(quitados.length&&ativos.length){
-    var totQ=_r2(quitados.reduce(function(s,l){return s+loanPrincipal(l);},0));
-    html+='<button class="sec-a" style="margin:10px 14px 0;padding:6px 0;background:none;border:none"'
-      +' aria-expanded="'+(fichaVerQuitados?'true':'false')+'" onclick="toggleQuitados()">'
-      +(fichaVerQuitados?'esconder':'ver')+' '+quitados.length+' já quitado'+(quitados.length>1?'s':'')
-      +' · <span class="mono">'+fmt(totQ)+'</span></button>';
-  }
-
-  // ---- saldo devedor (ou o aviso de quitado) ----
-  var sit=sitLoan(alvo),bal=getBalance(alvo),pagoPer=getPaidPeriod(alvo);
-  if(bal>0.009){
-    html+='<div class="bloco" style="margin-top:12px;border-left:3px solid '+corSit(sit)+'">'
-      +'<div style="padding:14px 15px 15px">'
-      +'<div style="display:flex;justify-content:space-between;align-items:center;gap:9px">'
-        +'<span class="tile-l">Saldo devedor</span>'
-        +selo(sitFrase(alvo),corSit(sit),corSitS(sit))+'</div>'
-      +'<div style="margin:5px 0 3px">'+din(bal,32)+'</div>'
-      +'<div style="font-size:12.5px;color:var(--dim)">de '+fmt(alvo.currentAmount)
-        +' · juro '+alvo.interest+'% ao mês · vence '+fmtDate(alvo.dueDate)+'</div>'
-      +(pagoPer>0
-        ?'<div style="margin-top:11px;height:6px;background:var(--pn2);border-radius:3px;overflow:hidden">'
-         +'<div style="height:100%;width:'+Math.min(100,Math.round(pagoPer/(alvo.currentAmount||1)*100))
-         +'%;background:var(--gr)"></div></div>'
-         +'<div style="font-size:11.5px;color:var(--gr);margin-top:5px;font-weight:600">'
-         +fmt(pagoPer)+' já pago neste período</div>':'')
-      +'</div></div>';
   }else{
     html+='<div class="bloco" style="margin-top:12px"><div style="padding:18px;text-align:center">'
       +'<span style="color:var(--gr);display:flex;justify-content:center;margin-bottom:6px">'+sv(I.check,26)+'</span>'
       +'<div style="font-weight:700">Sem dívida em aberto</div>'
-      +'<div style="font-size:12.5px;color:var(--dim)">Último vencimento em '+fmtDate(alvo.dueDate)+'</div>'
+      +'<div style="font-size:12.5px;color:var(--dim)">Este cliente não deve nada hoje.</div>'
       +'</div></div>';
   }
 
-  // ---- sugestão de renovação, quando é o passo natural ----
-  // O botão Renovar já existe entre as quatro ações, mas ficava perdido: quem
-  // acabou de receber só o juro não achava o caminho para rolar o mês. Aqui a
-  // conta aparece pronta, no momento em que ela faz sentido.
-  var _parcelado=!!(alvo.parcelas&&alvo.parcelas.length);
-  var _pagoPer=getPaidPeriod(alvo), _atraso=daysUntil(alvo.dueDate);
-  if(!_parcelado&&bal>0.009&&(_pagoPer>0||_atraso<0)){
-    var _juroNovo=_r2(bal*alvo.interest/100), _novoTotal=_r2(bal+_juroNovo);
-    html+='<div class="bloco" style="margin-top:11px;border-left:3px solid var(--ac);padding:13px 15px">'
-      +'<div style="font-size:14px;font-weight:700;margin-bottom:3px">'
-      +(_pagoPer>0?'Recebeu '+fmt(_pagoPer)+' neste mês. Rolar o resto?'
-                 :'Venceu há '+Math.abs(_atraso)+' dia'+(Math.abs(_atraso)>1?'s':'')+'. Rolar para o próximo mês?')+'</div>'
-      +'<div style="font-size:12.5px;color:var(--dim);line-height:1.5">Sobra '+fmt(bal)
-      +'. Com o juro de '+alvo.interest+'% vira <span class="mono" style="color:var(--tx);font-weight:600">'
-      +fmt(_novoTotal)+'</span>, vencendo em '+_dm(addDays(today(),CONFIG.CICLO_DIAS))+'.</div>'
-      +'<button class="btn btn-ac" style="margin-top:11px" onclick="openRenew(\''+_js(alvo.id)+'\')">'
-      +sv(I.cycle,17)+'Renovar para o próximo mês</button></div>';
+  // ---- 2. EMPRÉSTIMOS EM ABERTO ----
+  // Um por linha, fechados. Tocar abre UM — e fecha o que estava aberto.
+  if(ativos.length){
+    html+='<div class="sec"><span class="sec-t">Empréstimos em aberto</span></div>'
+      +'<div class="bloco" style="padding:0;overflow:hidden">'
+      + ativos.map(function(l,i){
+          return _fichaEmprestimoHtml(l,i<ativos.length-1);
+        }).join('')
+      +'</div>';
   }
 
-  // ---- as quatro ações ----
-  var parcelado=_parcelado;
-  html+='<div class="acoes">'
-    +(bal>0.009&&!parcelado
-      ?'<button class="acao pri" onclick="abrirReceber(\''+_js(alvo.id)+'\')">'+sv(I.check,18)+'Receber</button>'
-      :'<button class="acao" disabled style="opacity:.45">'+sv(I.check,18)+'Receber</button>')
-    +((!parcelado&&bal>0.009)
-      ?'<button class="acao" onclick="openRenew(\''+_js(alvo.id)+'\')">'+sv(I.cycle,18)+'Renovar</button>'
-      :'<button class="acao" disabled style="opacity:.45">'+sv(I.cycle,18)+'Renovar</button>')
-    +'<button class="acao" onclick="openReceipt(\''+_js(alvo.id)+'\')">'+sv(I.rec,18)+'Recibo</button>'
-    +'<button class="acao" onclick="openHistory(\''+_js(alvo.id)+'\')">'+sv(I.doc,18)+'Documentos</button>'
-    +'</div>';
+  // ---- 3. HISTÓRICO DO CLIENTE (atrás de abrir e fechar) ----
+  // Guarda o Resumo (os três números da vida inteira com esta pessoa) e a
+  // lista do que já foi quitado. Nasce fechado: na maior parte das vezes o
+  // dono abre a ficha para cobrar, não para conferir o passado.
+  var histAberto=!!expandedClientHistory[key];
+  html+='<div class="sec"><span class="sec-t">Histórico do cliente</span>'
+    +'<button class="sec-a" aria-expanded="'+(histAberto?'true':'false')+'"'
+    +' onclick="toggleClientHistory(\''+_js(key)+'\')">'
+    +(histAberto?'fechar':'abrir')+' '+(histAberto?'▴':'▾')+'</button></div>';
+  if(histAberto){
+    // Os três números do Resumo, somados empréstimo a empréstimo pelo razão.
+    // Entram os INADIMPLENTES e os QUITADOS: "tirei do bolso" e "já voltou"
+    // são a história inteira do cliente, não só o que está aberto hoje.
+    var emprestei=0,jaPagou=0,soJuros=0;
+    allRecords().forEach(function(l){
+      if(!l||clientKey(l.name)!==key)return;
+      var g2=ledger(l);
+      emprestei=_r2(emprestei+g2.capitalEmprestado);
+      jaPagou=_r2(jaPagou+g2.recebidoTotal);
+      soJuros=_r2(soJuros+g2.jurosRecebido);
+    });
+    html+=_resumoBox(emprestei,jaPagou,soJuros)+_blocoPerfil(key);
 
-  // ---- parcelas, quando for o caso ----
-  if(parcelado){
-    var pagas=alvo.parcelas.filter(function(p){return p.paid;}).length;
-    html+='<div class="sec"><span class="sec-t">Parcelas · '+pagas+'/'+alvo.parcelas.length+' pagas</span></div>'
-      +'<div class="bloco">'+renderParcelasList(alvo)+'</div>'
-      +'<div style="font-size:11.5px;color:var(--dim2);padding:8px 16px 0;line-height:1.5">'
-      +'Empréstimo parcelado: o recebimento é parcela por parcela, no botão de cada linha. '
-      +'Por isso Receber e Renovar ficam apagados aqui.</div>';
+    html+='<div class="sec"><span class="sec-t">Já quitou</span>'
+      +(quitados.length?'<span class="sec-t">'+quitados.length+'</span>':'')+'</div>';
+    if(quitados.length){
+      html+='<div class="bloco" style="padding:0;overflow:hidden">'
+        + quitados.map(function(l,i){
+            return _fichaQuitadoHtml(l,i<quitados.length-1);
+          }).join('')
+        +'</div>';
+    }else{
+      html+='<div class="bloco"><div style="padding:14px;font-size:12.5px;color:var(--dim);line-height:1.5">'
+        +'Nenhum empréstimo quitado ainda. Assim que um for pago até o fim, ele aparece aqui '
+        +'com o histórico inteiro.</div></div>';
+    }
   }
 
-  // ---- documentos do cliente (T2) ----
-  // Fica logo depois das ações: é onde o dono procura quando quer conferir
-  // ou anexar a cópia que chegou pelo WhatsApp.
-  html+=fichaDocsHtml(key);
-
-  // ---- meu dinheiro com este cliente (soma do cliente inteiro) ----
-  // C10 — MESMO CONJUNTO E MESMO CRITERIO DO SELO DE PERFIL, QUE FICA LOGO ABAIXO.
-  // Antes este quadro somava so o que esta em `loans` — se o cliente tivesse um
-  // emprestimo na lista de inadimplentes, ele ficava de fora — e contava como
-  // "ainda em risco" ate emprestimo ja quitado. O selo de perfil, a um centimetro
-  // dali, usava allRecords() e ignorava os quitados. Dois numeros diferentes para
-  // a mesma pergunta, um do lado do outro.
-  // REGRA DO DONO: quitado NAO esta mais em risco — ele esta fechado.
-  // Capital e recebido continuam somando a vida toda (inclusive quitados), porque
-  // "tirei do bolso" e "ja voltou" sao a historia inteira do cliente.
-  var capCli=0,recCli=0,riscoCli=0;
-  allRecords().forEach(function(l){
-    if(!l||clientKey(l.name)!==key)return;
-    var g2=ledger(l);
-    capCli=_r2(capCli+g2.capitalEmprestado);
-    recCli=_r2(recCli+g2.recebidoTotal);
-    if(l.paid)return;                     // quitado sai do "ainda em risco"
-    riscoCli=_r2(riscoCli+g2.emRisco);
-  });
-  if(op.dentroDaLista&&!expandedClientHistory[key]){
-    // Na lista o detalhe fica atrás de um toque, como sempre foi.
-    html+='<div class="sec"><button class="sec-a" style="color:var(--dim)"'
-      +' onclick="toggleClientHistory(\''+_js(key)+'\')">Histórico do cliente ▾</button></div>';
-  }else{
-    html+='<div class="sec"><span class="sec-t">Meu dinheiro com este cliente</span></div>'
-      + _capitalBox(capCli,recCli,riscoCli)
-      + _blocoPerfil(key);
-  }
-
-  // ---- extrato do razão ----
-  if(!op.dentroDaLista||expandedClientHistory[key]){
-    html+='<div class="sec"><span class="sec-t">Extrato'
-      +(ls.length>1?' deste empréstimo':'')+'</span></div>'
-      +'<div class="bloco">'+extratoHtml(alvo)+'</div>';
-  }
+  // ---- 4. DOCUMENTOS (atrás de abrir e fechar) ----
+  var docsAberto=!!expandedClientDocs[key];
+  var _qtDoc=docItensDoCliente(key,'docRG').length+docItensDoCliente(key,'docResidencia').length;
+  html+='<div class="sec"><span class="sec-t">Documentos'
+    +(_qtDoc?' · '+_qtDoc:'')+'</span>'
+    +'<button class="sec-a" aria-expanded="'+(docsAberto?'true':'false')+'"'
+    +' onclick="toggleClientDocs(\''+_js(key)+'\')">'
+    +(docsAberto?'fechar':'abrir')+' '+(docsAberto?'▴':'▾')+'</button></div>';
+  if(docsAberto)html+=fichaDocsHtml(key);
 
   // ---- o que mais dá para fazer com este cliente ----
+  // Editar, Adicionar valor e excluir saíram daqui: são de UM empréstimo, e
+  // agora vivem dentro dele. Aqui ficou só o que é do cliente inteiro.
   html+='<div style="display:flex;flex-direction:column;gap:8px;margin:16px 14px 0">'
     +'<button class="btn btn-gh" onclick="novoParaCliente(\''+_js(key)+'\')">'+sv(I.plus,18)
       +'Novo empréstimo para '+esc(_primeiroNome(_nomeDoCliente(key)))+'</button>'
     +(ativos.length>1
       ?'<button class="btn btn-gh" onclick="openPayAll(\''+_js(key)+'\')">'+sv(I.check,18)
-        +'Pagar todos — '+fmt(_r2(ativos.reduce(function(s,l){return s+getBalance(l);},0)))+'</button>':'')
+        +'Pagar todos — '+fmt(totalCli)+'</button>':'')
     +(ativos.length
       ?'<button class="btn-txt" style="color:var(--am)" onclick="moveClientToInad(\''+_js(key)+'\')">'
         +'Mover para inadimplentes</button>':'')
-    +(!alvo.paid
-      ?'<div class="btn-fila">'
-        +'<button class="btn btn-gh" onclick="openEdit(\''+_js(alvo.id)+'\')">'+sv(I.edit,17)+'Editar</button>'
-        +'<button class="btn btn-gh" onclick="openAddValue(\''+_js(alvo.id)+'\')">'+sv(I.plus,17)+'Valor</button>'
-        +'<button class="btn btn-gh fixo" style="color:var(--rd)" aria-label="Excluir empréstimo"'
-          +' onclick="deleteLoan(\''+_js(alvo.id)+'\')">'+sv(I.trash,17)+'</button>'
-       +'</div>'
-      :'')
     +'</div>';
   return html;
 }
-function verEmprestimo(id){fichaLoanId=id;renderAll();}
-function toggleQuitados(){fichaVerQuitados=!fichaVerQuitados;renderAll();}
+
+// ------------------------------------------------------------
+// Uma linha de empréstimo em aberto na ficha — fechada ou aberta.
+// ------------------------------------------------------------
+// Fechada: vence quando, e quanto ainda deve.
+// Aberta: o detalhe do saldo, a sugestão de rolar o mês quando faz sentido,
+// os botões e — se o dono pedir — o extrato daquele empréstimo.
+function _fichaEmprestimoHtml(l,temBorda){
+  var aberto=(fichaLoanId===l.id);
+  var sit=sitLoan(l), bal=getBalance(l), dl=daysUntil(l.dueDate);
+  var quando=dl<0?'venceu há '+Math.abs(dl)+'d':dl===0?'vence hoje':'vence em '+dl+'d';
+  var h='<button class="emp-linha" aria-expanded="'+(aberto?'true':'false')+'"'
+    +' onclick="verEmprestimo(\''+_js(l.id)+'\')"'
+    +' style="border-left:3px solid '+corSit(sit)+';background:'+(aberto?'var(--acS)':'var(--pn)')
+    +((temBorda&&!aberto)?';border-bottom:1px solid var(--ln)':'')+'">'
+    // "vence 25/09 · vence em 3d" dizia "vence" duas vezes e estourava a
+    // largura no celular estreito e no painel do computador. Só a data aqui.
+    +'<span class="emp-linha-t">'+_dm(l.dueDate)
+      +' · <span style="color:'+corSit(sit)+';font-weight:600">'+esc(quando)+'</span></span>'
+    + din(bal,14,aberto?'var(--ac)':'var(--tx)')
+    +'<span style="color:var(--dim2);font-size:11px;margin-left:8px">'+(aberto?'▴':'▾')+'</span>'
+    +'</button>';
+  if(!aberto)return h;
+  return h+_fichaEmprestimoAbertoHtml(l,temBorda);
+}
+function _fichaEmprestimoAbertoHtml(l,temBorda){
+  var sit=sitLoan(l), bal=getBalance(l), pagoPer=getPaidPeriod(l);
+  var parcelado=!!(l.parcelas&&l.parcelas.length);
+  var h='<div style="background:var(--pn2);padding:12px 13px 14px'
+    +(temBorda?';border-bottom:1px solid var(--ln)':'')+'">';
+
+  // O detalhe do saldo: é aqui que a taxa de juro vive agora.
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:9px">'
+    +'<span class="tile-l">Saldo devedor</span>'
+    +selo(sitFrase(l),corSit(sit),corSitS(sit))+'</div>'
+    +'<div style="margin:5px 0 3px">'+din(bal,26)+'</div>'
+    +'<div style="font-size:12.5px;color:var(--dim)">de '+fmt(l.currentAmount)
+      +' · juro '+l.interest+'% ao mês · vence '+fmtDate(l.dueDate)+'</div>';
+  if(pagoPer>0){
+    h+='<div style="margin-top:11px;height:6px;background:var(--pn);border-radius:3px;overflow:hidden">'
+      +'<div style="height:100%;width:'+Math.min(100,Math.round(pagoPer/(l.currentAmount||1)*100))
+      +'%;background:var(--gr)"></div></div>'
+      +'<div style="font-size:11.5px;color:var(--gr);margin-top:5px;font-weight:600">'
+      +fmt(pagoPer)+' já pago neste período</div>';
+  }
+
+  // Sugestão de rolar o mês, quando é o passo natural. Sem cartão dentro de
+  // cartão: é um parágrafo com a barra dourada na lateral.
+  var _atraso=daysUntil(l.dueDate);
+  if(!parcelado&&bal>0.009&&(pagoPer>0||_atraso<0)){
+    var _juroNovo=_r2(bal*l.interest/100), _novoTotal=_r2(bal+_juroNovo);
+    h+='<div style="margin-top:12px;border-left:3px solid var(--ac);padding:1px 0 1px 10px">'
+      +'<div style="font-size:13.5px;font-weight:700;margin-bottom:2px">'
+      +(pagoPer>0?'Recebeu '+fmt(pagoPer)+' neste mês. Rolar o resto?'
+                 :'Venceu há '+Math.abs(_atraso)+' dia'+(Math.abs(_atraso)>1?'s':'')+'. Rolar para o próximo mês?')+'</div>'
+      +'<div style="font-size:12.5px;color:var(--dim);line-height:1.5">Sobra '+fmt(bal)
+      +'. Com o juro de '+l.interest+'% vira <span class="mono" style="color:var(--tx);font-weight:600">'
+      +fmt(_novoTotal)+'</span>, vencendo em '+_dm(addDays(today(),CONFIG.CICLO_DIAS))+'.</div></div>';
+  }
+
+  // Parcelas, quando for o caso.
+  if(parcelado){
+    var pagas=l.parcelas.filter(function(p){return p.paid;}).length;
+    h+='<div style="font-size:10.5px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;'
+      +'color:var(--dim2);margin:14px 0 6px">Parcelas · '+pagas+'/'+l.parcelas.length+' pagas</div>'
+      +'<div style="background:var(--pn);border:1px solid var(--ln);border-radius:12px;overflow:hidden">'
+      + renderParcelasList(l)+'</div>'
+      +'<div style="font-size:11.5px;color:var(--dim2);padding-top:8px;line-height:1.5">'
+      +'Empréstimo parcelado: o recebimento é parcela por parcela, no botão de cada linha. '
+      +'Por isso Receber e Renovar ficam apagados aqui.</div>';
+  }
+
+  // Os botões deste empréstimo. Recibo ficou: é por onde sai a cobrança no
+  // WhatsApp, e o escopo não pediu para tirar.
+  var _histOn=(fichaExtratoId===l.id);
+  h+='<div class="acoes" style="margin:12px 0 0">'
+    +(bal>0.009&&!parcelado
+      ?'<button class="acao pri" onclick="abrirReceber(\''+_js(l.id)+'\')">'+sv(I.check,18)+'Receber</button>'
+      :'<button class="acao" disabled style="opacity:.45">'+sv(I.check,18)+'Receber</button>')
+    +((!parcelado&&bal>0.009)
+      ?'<button class="acao" onclick="openRenew(\''+_js(l.id)+'\')">'+sv(I.cycle,18)+'Renovar</button>'
+      :'<button class="acao" disabled style="opacity:.45">'+sv(I.cycle,18)+'Renovar</button>')
+    +'<button class="acao" onclick="openReceipt(\''+_js(l.id)+'\')">'+sv(I.rec,18)+'Recibo</button>'
+    +'<button class="acao" aria-expanded="'+(_histOn?'true':'false')+'"'
+      +' aria-label="Ver o histórico deste empréstimo"'
+      +' onclick="verExtrato(\''+_js(l.id)+'\')"'
+      +(_histOn?' style="border-color:var(--ac);color:var(--ac)"':'')+'>'
+      +sv(I.doc,18)+'Histórico</button>'
+    +'</div>'
+    +'<div class="btn-fila" style="margin-top:8px">'
+    +'<button class="btn btn-gh" onclick="openEdit(\''+_js(l.id)+'\')">'+sv(I.edit,17)+'Editar</button>'
+    +'<button class="btn btn-gh" onclick="openAddValue(\''+_js(l.id)+'\')">'+sv(I.plus,17)+'Adicionar valor</button>'
+    +'<button class="btn btn-gh fixo" style="color:var(--rd)" aria-label="Excluir empréstimo"'
+      +' onclick="deleteLoan(\''+_js(l.id)+'\')">'+sv(I.trash,17)+'</button>'
+    +'</div>';
+
+  if(_histOn){
+    h+='<div style="margin-top:13px;border-top:1px solid var(--ln);padding-top:4px">'
+      + extratoHtml(l)+'</div>';
+  }
+  return h+'</div>';
+}
+// Um empréstimo já quitado, dentro do Histórico. Tocar abre o histórico dele.
+function _fichaQuitadoHtml(l,temBorda){
+  var aberto=(fichaExtratoId===l.id);
+  var lg=ledger(l);
+  var h='<button class="emp-linha" aria-expanded="'+(aberto?'true':'false')+'"'
+    +' onclick="verExtrato(\''+_js(l.id)+'\')"'
+    +' style="border-left:3px solid var(--gr);background:'+(aberto?'var(--pn2)':'var(--pn)')
+    +((temBorda&&!aberto)?';border-bottom:1px solid var(--ln)':'')+'">'
+    +'<span class="emp-linha-t">pegou '+fmt(loanPrincipal(l))
+      +' · <span style="color:var(--gr);font-weight:600">quitado</span></span>'
+    + din(lg.jurosRecebido,14,'var(--ac)')
+    +'<span style="color:var(--dim2);font-size:11px;margin-left:8px">'+(aberto?'▴':'▾')+'</span>'
+    +'</button>';
+  if(!aberto)return h;
+  return h+'<div style="background:var(--pn2);padding:10px 13px 14px'
+    +(temBorda?';border-bottom:1px solid var(--ln)':'')+'">'
+    +'<div style="font-size:12.5px;color:var(--dim);padding-bottom:6px">'
+      +'Rendeu <span class="mono" style="color:var(--ac);font-weight:600">'+fmt(lg.jurosRecebido)
+      +'</span> de juros · último vencimento em '+fmtDate(l.dueDate)+'</div>'
+    + extratoHtml(l)
+    +'<div class="btn-fila" style="margin-top:10px">'
+    +'<button class="btn btn-gh" onclick="openEdit(\''+_js(l.id)+'\')">'+sv(I.edit,17)+'Editar</button>'
+    +'<button class="btn btn-gh fixo" style="color:var(--rd)" aria-label="Excluir empréstimo"'
+      +' onclick="deleteLoan(\''+_js(l.id)+'\')">'+sv(I.trash,17)+'</button>'
+    +'</div></div>';
+}
+// O RESUMO — os três números que o dono pediu, no lugar do antigo quadro
+// "Meu dinheiro com este cliente". Nenhuma conta nova: saem todos do razão.
+//   Emprestei   = capital que saiu do bolso para esta pessoa
+//   Já me pagou = tudo que voltou (capital + juros)
+//   Só de juros = o lucro, e é por isso que ele vem em dourado
+function _resumoBox(emprestei,jaPagou,soJuros){
+  return '<div class="bloco">'
+    + kv('Emprestei',din(_r2(emprestei),13.5))
+    + kv('Já me pagou',din(_r2(jaPagou),13.5,'var(--gr)'))
+    + kv('Só de juros',din(_r2(soJuros),15.5,'var(--ac)'),true)
+    +'</div>';
+}
+// Abrir um empréstimo FECHA o que estava aberto — um de cada vez, senão a
+// ficha vira a lista corrida que o dono pediu para acabar.
+function verEmprestimo(id){
+  fichaLoanId=(fichaLoanId===id)?null:id;
+  fichaExtratoId=null;
+  renderAll();
+}
+function verExtrato(id){
+  fichaExtratoId=(fichaExtratoId===id)?null:id;
+  renderAll();
+}
+function toggleClientDocs(key){
+  if(expandedClientDocs[key])delete expandedClientDocs[key];
+  else expandedClientDocs[key]=true;
+  renderAll();
+}
 function novoParaCliente(key){
   var l=_loansDoCliente(key)[0]||(clients||[]).find(function(c){return clientKey(c.name)===key;});
   if(!l){openForm();return;}
@@ -3632,11 +3958,11 @@ function renderReceber(){
 }
 function atalho(rot,v,id,vazio){
   if(v<=0.009){
-    return '<button class="seg-btn" disabled style="min-height:48px;font-size:14px;opacity:.5">'
-      +rot+' · '+(vazio||'—')+'</button>';
+    return '<button class="seg-btn atalho" disabled style="min-height:48px;font-size:14px;opacity:.5">'
+      +'<span>'+rot+'</span><span>'+(vazio||'—')+'</span></button>';
   }
-  return '<button class="seg-btn" style="min-height:48px;font-size:14px" onclick="usarAtalho('+v+',\''+_js(id)+'\')">'
-    +rot+' · <span class="mono">'+fmt(v)+'</span></button>';
+  return '<button class="seg-btn atalho" style="min-height:48px;font-size:14px" onclick="usarAtalho('+v+',\''+_js(id)+'\')">'
+    +'<span>'+rot+'</span><span class="mono">'+fmt(v)+'</span></button>';
 }
 function usarAtalho(v,id){
   var el=document.getElementById('pay-input');
@@ -3872,6 +4198,147 @@ function _syncTaxaCliente(){
   updatePreview();
 }
 
+// ============================================================
+// BLOCO 6 — ANTES DE EMPRESTAR DE NOVO (23/09/2026)
+// ============================================================
+// Aparece DENTRO do formulário, logo abaixo do nome, assim que o nome digitado
+// é o de alguém que já teve registro. Cliente novo não tem painel.
+// NÃO BLOQUEIA E NÃO ACONSELHA: mostra o fato e sai da frente. Era isso que o
+// escopo pediu, e é isso e só isso que ele faz.
+//
+// A PONTUALIDADE ERA O RISCO Nº 1 DO ESCOPO, E O RISCO ACONTECEU.
+// Não dá para saber, do que está gravado nos registros antigos, se um pagamento
+// foi feito no dia ou com atraso. O vencimento que valia na época nunca foi
+// guardado, e `dueDate` é reescrito pela renovação, pela edição (que nem deixa
+// lançamento), pelo juro da parcela vencida e pelo descongelamento. Foi
+// investigado com contraexemplos: dois empréstimos com prazos combinados
+// diferentes — um pago no dia, outro com 26 dias de atraso — produzem, depois
+// de uma renovação, registros IDÊNTICOS. A conta ingênua (`startDate` + 30 ×
+// período) errou metade dos casos testados, e errou calado.
+// A saída é a que o próprio escopo já previa: passar a GRAVAR o vencimento em
+// cada pagamento novo (`_vencAgora`) e contar SÓ o que tem o campo. Enquanto
+// não houver nenhum, o painel diz isso, em vez de inventar um número.
+// Regra de ouro deste bloco: erra sempre para o lado de OMITIR.
+
+// Diferença em dias entre duas datas YYYY-MM-DD. Qualquer coisa fora do
+// formato devolve null — o painel prefere não contar a chutar.
+function _diasDe(de,ate){
+  if(!de||!ate)return null;
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(de)||!/^\d{4}-\d{2}-\d{2}$/.test(ate))return null;
+  var a=new Date(de+'T00:00:00'),b=new Date(ate+'T00:00:00');
+  if(isNaN(a.getTime())||isNaN(b.getTime()))return null;
+  return Math.round((b-a)/86400000);
+}
+// Este registro já teve o vencimento rolado PELA MÁQUINA? Se teve, `dueDate`
+// deixou de ser um prazo combinado com o cliente e virou um número que o laço
+// do juro empurrou sozinho — e todo pagamento gravado depois carrega esse
+// número. Não dá para separar quais pagamentos vieram antes, porque os
+// lançamentos do juro são datados por COMPETÊNCIA (o vencimento que está sendo
+// rolado), não pelo dia em que o laço rodou. Então o registro inteiro sai da
+// conta, e não só os pagamentos posteriores.
+function _vencRoladoPelaMaquina(l){
+  if(!l)return true;
+  if(l.note==='Reativado')return true;                    // voltou dos inadimplentes
+  if((inadimplentes||[]).some(function(i){return i&&i.id===l.id;}))return true;
+  return (l.history||[]).some(function(h){
+    if(!h)return false;
+    if(h.type==='congelamento'||h.type==='descongelamento')return true;
+    return h.type==='renovacao'&&/inadimpl/i.test(h.note||'');
+  });
+}
+// Quantos pagamentos deste cliente dá para conferir, e o que eles dizem.
+// Devolve também `ignorados`: dizer "2 conferidos, 2 no dia" sem contar que
+// outros 10 ficaram de fora seria mentir por omissão.
+function _pontualidade(key){
+  var r={calculavel:false,total:0,atrasos:0,noDia:0,adiantados:0,media:0,
+         ignorados:0,motivo:''};
+  var soma=0,achou=false,soParcelado=true;
+  allRecords().forEach(function(l){
+    if(!l||clientKey(l.name)!==key)return;
+    achou=true;
+    var parcelado=!!(l.parcelas&&l.parcelas.length);
+    if(!parcelado)soParcelado=false;
+    var rolado=_vencRoladoPelaMaquina(l);
+    (l.history||[]).concat(l.payments||[]).forEach(function(h){
+      if(!h||!h.date)return;
+      // no history só interessa pagamento; em payments não existe `type`
+      if(h.type&&String(h.type).indexOf('pagamento')<0)return;
+      if(parcelado){r.ignorados++;return;}       // ver _vencAgora
+      if(rolado){r.ignorados++;return;}
+      if(!h.vencimento){r.ignorados++;return;}   // lançamento anterior a esta versão
+      var d=_diasDe(h.vencimento,h.date);
+      if(d===null){r.ignorados++;return;}
+      // Última rede: mais de um ciclo adiantado ou mais de um ano de atraso quer
+      // dizer que o vencimento gravado não é o deste pagamento.
+      if(d<-CONFIG.CICLO_DIAS||d>365){r.ignorados++;return;}
+      r.total++;
+      if(d>0){r.atrasos++;soma+=d;}
+      else if(d===0)r.noDia++;
+      else r.adiantados++;
+    });
+  });
+  if(r.atrasos)r.media=Math.round(soma/r.atrasos);
+  r.calculavel=r.total>0;
+  if(!r.calculavel){
+    r.motivo=!achou?'cliente sem registro'
+      :soParcelado?'os empréstimos dele são parcelados, e o app não guarda a qual parcela cada pagamento se refere'
+      :r.ignorados?'nenhum pagamento dele tem vencimento confiável gravado'
+      :'ele ainda não fez nenhum pagamento';
+  }
+  return r;
+}
+// A frase da pontualidade. Sempre diz quantos ficaram de fora.
+function _frasePontualidade(p){
+  if(!p.calculavel){
+    return '<b>Pontualidade — ainda não acompanhada.</b> O app passou a marcar o '
+      +'vencimento de cada pagamento a partir desta versão'
+      +(p.ignorados?', e os '+p.ignorados+' pagamento'+(p.ignorados>1?'s':'')
+        +' anterior'+(p.ignorados>1?'es':'')+' não têm como ser conferido'
+        +(p.ignorados>1?'s':''):'')
+      +'. Número que não dá para provar não entra aqui.';
+  }
+  var emDia=p.noDia+p.adiantados;
+  return '<b>Pontualidade</b> — '+p.total+' pagamento'+(p.total>1?'s':'')
+    +' conferido'+(p.total>1?'s':'')+': '+emDia+' no dia ou adiantado'
+    +(emDia!==1?'s':'')+', '+p.atrasos+' com atraso'
+    +(p.atrasos?' (média de '+p.media+' dia'+(p.media!==1?'s':'')+')':'')+'.'
+    +(p.ignorados?' Outro'+(p.ignorados>1?'s ':' ')+p.ignorados+' pagamento'
+      +(p.ignorados>1?'s':'')+' não pôde ser conferido.':'');
+}
+function _painelAntesHtml(){
+  var nome=((formData&&formData.name)||'').trim();
+  if(!nome)return '';
+  var key=clientKey(nome);
+  var meus=allRecords().filter(function(l){return l&&clientKey(l.name)===key;});
+  if(!meus.length)return '';                 // cliente novo não tem painel
+  var rendeu=0,deve=0,quitados=0,desde='';
+  meus.forEach(function(l){
+    rendeu=_r2(rendeu+ledger(l).jurosRecebido);
+    if(l.paid)quitados++;else deve=_r2(deve+getBalance(l));
+    var d=_dataDoEmprestimo(l);
+    if(d&&(!desde||d<desde))desde=d;
+  });
+  var perfil=clientPerfil(key);
+  return '<div class="campo"><span class="rot">Antes de emprestar de novo</span>'
+    +'<div class="bloco plano" style="margin-top:5px">'
+    + kv('Cliente desde',desde?'<span style="font-size:13.5px">'+esc(fmtDate(desde))+'</span>'
+        :'<span style="font-size:13.5px;color:var(--dim2)">não registrado</span>')
+    + kv('Já quitou','<span style="font-size:13.5px">'+quitados+' empréstimo'
+        +(quitados!==1?'s':'')+'</span>')
+    + kv('Já rendeu de juros',din(rendeu,13.5,'var(--ac)'))
+    + kv('Ainda deve',din(deve,15.5,deve>0?'var(--am)':'var(--gr)'),true)
+    +'</div>'
+    +'<div style="font-size:12px;line-height:1.5;color:var(--dim);padding:8px 2px 0">'
+    + _frasePontualidade(_pontualidade(key))
+    +(perfil&&perfil.rotulo?' '+esc(perfil.frase):'')
+    +'</div></div>';
+}
+// Redesenha só o painel enquanto o dono digita o nome, sem refazer o formulário
+// inteiro — refazer tiraria o foco do campo a cada letra.
+function _syncPainelAntes(){
+  var el=document.getElementById('painel-antes-wrap');
+  if(el)el.innerHTML=_painelAntesHtml();
+}
 function renderForm(){
   var amt=parseFloat(formData.amount)||0;
   var rate=parseFloat(formData.interest)||0;
@@ -3892,8 +4359,9 @@ function renderForm(){
     +'<button class="modal-close" onclick="closeModal()" aria-label="Fechar">'+sv(I.x,18)+'</button></div>'
     +'<div class="field"><label for="f-name">Nome do cliente</label>'
       +'<div style="position:relative"><input id="f-name" class="inp" type="text" value="'+esc(formData.name)+'"'
-      +' placeholder="Quem está pegando" oninput="formData.name=this.value;showSugg();_syncTaxaCliente()"'
+      +' placeholder="Quem está pegando" oninput="formData.name=this.value;showSugg();_syncTaxaCliente();_syncPainelAntes()"'
       +' onblur="setTimeout(hideSugg,200)" autocomplete="off"><div id="sugg-box"></div></div></div>'
+    +'<div id="painel-antes-wrap">'+_painelAntesHtml()+'</div>'
     +'<div class="field-row">'
       +'<div class="field"><label>Telefone</label><input class="inp" type="tel" value="'+esc(formData.phone||'')+'"'
       +' placeholder="(00) 00000-0000" oninput="formData.phone=this.value"></div>'
@@ -4087,7 +4555,29 @@ function _removeClientExec(idx){
   else showToast('Cliente "'+c.name+'" removido');
   showSugg();
 }
+// M4 (21/09/2026) — antes de criar, olha se já não existe um igual.
+// A checagem fica AQUI, na porta de entrada, e não dentro de _addLoanExec:
+// assim o caminho que de fato grava continua o mesmo de sempre, sem galho novo.
 function addLoan(){
+  var amt=parseFloat(formData.amount);
+  if(!formData.name.trim()||!amt||amt<=0){showToast('Preencha nome e valor','error');return;}
+  var ref={name:formData.name.trim(),principal:amt,
+           interest:parseFloat(formData.interest),startDate:formData.startDate||today()};
+  var iguais=_clonesDe(ref);
+  if(!iguais.length){_addLoanExec();return;}
+  var q=iguais[0];
+  var quando=(q.history||[]).length?' (lançado em '+fmtDate((q.history[0]||{}).date||q.startDate)+')':'';
+  pedirConfirmacao({
+    titulo:'Já existe um empréstimo igual a este',
+    texto:esc(ref.name)+' já tem '+(iguais.length>1?iguais.length+' empréstimos':'um empréstimo')
+      +' de '+fmt(ref.principal)+' a '+ref.interest+'%, começando em '+fmtDate(ref.startDate)+quando+'.\n\n'
+      +'Se você está lançando o mesmo de novo sem querer, é agora que dá para parar.\n\n'
+      +'Se for um empréstimo NOVO de verdade, com o mesmo valor e no mesmo dia, pode seguir.',
+    ok:'É novo mesmo, lançar'},function(){
+      _addLoanExec();
+    });
+}
+function _addLoanExec(){
   var amt=parseFloat(formData.amount);
   if(!formData.name.trim()||!amt||amt<=0){showToast('Preencha nome e valor','error');return;}
   var rate=parseFloat(formData.interest)/100;
@@ -4266,14 +4756,14 @@ function _doPaymentExec(id,amount,note){
     // C11 — grava NO MAXIMO o saldo. Sem o Math.min, o excedente entrava como
     // dinheiro recebido e o razao nunca fechava com o cartao.
     var valorQuita=Math.min(amount,balance);
-    (loan.payments||[]).forEach(function(p){loan.history.push({date:p.date,type:'pagamento_parcial',value:p.value,note:p.note||''});});
-    loan.history.push({date:today(),type:'pagamento_final',value:valorQuita,note:(note?note+' · ':'')+'Dívida quitada! Pagamento de '+fmt(valorQuita)});
+    (loan.payments||[]).forEach(function(p){loan.history.push({date:p.date,type:'pagamento_parcial',value:p.value,note:p.note||'',vencimento:p.vencimento||''});});
+    loan.history.push({date:today(),type:'pagamento_final',value:valorQuita,vencimento:_vencAgora(loan),note:(note?note+' · ':'')+'Dívida quitada! Pagamento de '+fmt(valorQuita)});
     loan.paid=true;loan.currentAmount=0;loan.payments=[];
     showToast('✅ Dívida de '+loan.name+' quitada!');
   }else{
     // Parcial — adiciona ao array de pagamentos do período
     loan.payments=loan.payments||[];
-    loan.payments.push({id:uid(),date:today(),value:amount,note:note||''});
+    loan.payments.push({id:uid(),date:today(),value:amount,note:note||'',vencimento:_vencAgora(loan)});
     showToast('💳 '+fmt(amount)+' registrado para '+loan.name);
   }
   save(id);renderAll();closeModal();
@@ -4356,7 +4846,7 @@ function _doRenewExec(id,desc,dmot){
   var balance=getBalance(loan);
   var newTotal=parseFloat((balance*(1+loan.interest/100)).toFixed(2));
   // Move pagamentos do período para histórico
-  (loan.payments||[]).forEach(function(p){loan.history.push({date:p.date,type:'pagamento_parcial',value:p.value,note:p.note||''});});
+  (loan.payments||[]).forEach(function(p){loan.history.push({date:p.date,type:'pagamento_parcial',value:p.value,note:p.note||'',vencimento:p.vencimento||''});});
   loan.history.push({date:today(),type:'renovacao',value:balance,rate:loan.interest,
     note:'Renovado. Saldo: '+fmt(balance)+'. Juros '+loan.interest+'%: '+fmt(balance*loan.interest/100)+'. Novo total: '+fmt(newTotal)});
   loan.currentAmount=newTotal;
@@ -4465,6 +4955,21 @@ function _corrigirEmprestimoOriginal(l,amount,interest){
   // ouro do app e que esses dois numeros sao sempre iguais.
   hs[idxs[0]].value=parseFloat((amount-outros).toFixed(2));
   for(var j=0;j<idxs.length;j++)hs[idxs[j]].rate=interest;
+  // ============================================================
+  // M6 — O TEXTO DO LANCAMENTO TAMBEM TEM DE SER CORRIGIDO (22/09/2026)
+  // ============================================================
+  // A conta ja era corrigida acima (valor e taxa), mas a FRASE do lancamento
+  // continuava com os numeros antigos. O extrato e o recibo do WhatsApp
+  // mostravam o valor velho enquanto a divida usava o novo.
+  // Achado em 22/09/2026 em dois registros reais: um emprestimo editado de
+  // R$ 50 para R$ 100 continuava escrito "Empréstimo de R$ 50,00", e outro
+  // com a taxa mudada de 10% para 30% continuava escrito "Juros 10%".
+  hs[idxs[0]].note='Empréstimo de '+fmt(hs[idxs[0]].value)+' · Juros '+interest+'%';
+  // Os valores adicionais mantem o proprio valor; so a taxa citada muda.
+  for(var m=1;m<idxs.length;m++){
+    var nt=hs[idxs[m]].note||'';
+    if(nt)hs[idxs[m]].note=nt.replace(/(juros\s*)(\d+(?:[.,]\d+)?)(\s*%)/ig,'$1'+interest+'$3');
+  }
 }
 function saveEdit(id){
   var l=loans.find(function(x){return x.id===id;});if(!l)return;
@@ -4950,7 +5455,7 @@ function _histPagamentosPeriodo(loan){
   if(!loan)return;
   loan.history=loan.history||[];
   (loan.payments||[]).forEach(function(p){
-    loan.history.push({date:p.date,type:'pagamento_parcial',value:p.value,note:p.note||''});
+    loan.history.push({date:p.date,type:'pagamento_parcial',value:p.value,note:p.note||'',vencimento:p.vencimento||''});
   });
   loan.payments=[];
 }
@@ -4991,11 +5496,21 @@ function _moveClientToInadExec(key,motivo){
   saveInad(movidos);save();renderAll();
   showToast('⚠️ '+nome+' movido para inadimplentes');
 }
-// A tela própria de inadimplentes acabou: eles são um FILTRO da lista de
-// clientes. As ações continuam as mesmas (contato, reativar, excluir).
+// ============================================================
+// INADIMPLENTES — aba própria desde 22/09/2026 (bloco 4 da remodelação)
+// ============================================================
+// A REGRA DESTA TELA, decidida pelo dono em 21/09/2026: aqui aparece SÓ O QUE
+// SAIU DO BOLSO DELE. O saldo com juro — que cresce mês a mês sem teto — NÃO
+// aparece, porque esse número é calote provável, não dinheiro a receber, e
+// olhar para ele todo dia só dá a impressão de ter a receber o que não tem.
+// O saldo com juro continua GUARDADO E INTACTO no histórico de cada um: basta
+// tocar na linha. Se um deles voltar a pagar, está tudo lá.
+// O número mostrado é `capitalNaRua`, exatamente a mesma função que a Carteira
+// usa em "Dinheiro emprestado" — dois números diferentes para a mesma pergunta,
+// um em cada tela, é erro que este projeto já cometeu uma vez.
 function renderInad(){
   accrueInadimplentes();
-  var alvo=document.getElementById('loan-list');
+  var alvo=document.getElementById('inad-list');
   if(!alvo)return;
   updateInadBadge();
   if(!inadimplentes.length){
@@ -5005,11 +5520,17 @@ function renderInad(){
       +'<div style="font-size:12.5px;margin-top:2px">Tudo certo por aqui.</div></div>';
     return;
   }
-  var total=_r2(inadimplentes.reduce(function(s,i){return s+(i.currentAmount||0);},0));
-  alvo.innerHTML='<div style="display:flex;justify-content:space-between;gap:10px;'
-    +'padding:11px 16px 8px;font-size:11.5px;color:var(--dim2);font-weight:600">'
-    +'<span>'+inadimplentes.length+' inadimplente'+(inadimplentes.length>1?'s':'')+'</span>'
-    +'<span>'+din(total,11.5,'var(--rd)')+' parado</span></div>'
+  // SÓ CAPITAL. Nunca `currentAmount`, que é o saldo com juro.
+  var total=_r2(inadimplentes.reduce(function(s,i){return s+capitalNaRua(i);},0));
+  alvo.innerHTML='<div class="bloco" style="margin-top:12px;padding:14px 15px">'
+    +'<span class="rot">Do seu bolso, parado aqui</span>'
+    +'<div style="margin:4px 0 2px">'+din(total,30,'var(--rd)')+'</div>'
+    +'<div style="font-size:12.5px;color:var(--dim);line-height:1.5">'
+    +inadimplentes.length+' pessoa'+(inadimplentes.length>1?'s':'')
+    +'. É o dinheiro que você tirou do bolso e ainda não voltou. '
+    +'O saldo com juro de cada um continua guardado no histórico dele — toque na linha.'
+    +'</div></div>'
+    +'<div class="sec"><span class="sec-t">Quem está aqui</span></div>'
     +'<div class="bloco">'+inadimplentes.map(function(i){
       var phone=i.phone||'';
       // M2 — selo de juro congelado, com a data em que parou.
@@ -5019,7 +5540,8 @@ function renderInad(){
         +'<span class="linha-n">'+esc(i.name)+'</span>'
         +'<span class="linha-s">'+esc(i.motivo||'sem contato')+'</span>'
         +'<span class="linha-s">desde '+_dm(i.movidoEm)+' · '+(i.interest||0)+'% ao mês</span>'
-        + _linhaFecha('<span style="text-align:right">'+din(i.currentAmount,15,'var(--rd)')+'</span>'
+        // O valor da linha é o CAPITAL parado, não o saldo com juro.
+        + _linhaFecha('<span style="text-align:right">'+din(capitalNaRua(i),15,'var(--rd)')+'</span>'
           // A palavra continua "parado" (em 320px "congelado" nao cabe na
           // coluna e encosta na borda). Quem esta congelado se reconhece pela
           // cor ambar aqui e pela faixa logo abaixo, que diz desde quando.
@@ -5174,13 +5696,20 @@ function _excluirInadExec(id){
 // ============================================================
 // Report filter state
 var _rPeriod='all';var _rStatus='all';var _rClient='';var _rFrom='';var _rTo='';var expandedReportGroups={};
+var _rContador=null;   // qual contador está aberto na tela de Relatórios
 
 function getReportRange(){
   if(_rPeriod==='custom')return{from:_rFrom||null,to:_rTo||null};
   if(_rPeriod==='all')return{from:null,to:null};
   var now=new Date();var c=new Date(now);
-  if(_rPeriod==='1m')c.setMonth(c.getMonth()-1);
-  else if(_rPeriod==='3m')c.setMonth(c.getMonth()-3);
+  // "ESTE MÊS" É O MÊS, do dia 1 até hoje — decidido em 28/09/2026, depois de
+  // rodar o app com os dados reais do dono. Antes era "os últimos 30 dias", e
+  // por isso o "Só de juros · este mês" do relatório NÃO batia com o "Lucro
+  // mensal" da Carteira: dois números com nome de mês dando valores diferentes.
+  // Nos dados dele a diferença era de R$ 828,00 (3.151,19 contra 2.323,19).
+  // Os outros períodos continuam corridos, e os nomes deles já dizem isso.
+  if(_rPeriod==='1m')return{from:dStr(new Date(now.getFullYear(),now.getMonth(),1)),to:today()};
+  if(_rPeriod==='3m')c.setMonth(c.getMonth()-3);
   else if(_rPeriod==='6m')c.setMonth(c.getMonth()-6);
   else if(_rPeriod==='1y')c.setFullYear(c.getFullYear()-1);
   return{from:dStr(c),to:today()};
@@ -5218,23 +5747,37 @@ var _MESES=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','d
 // Nenhum número novo é inventado aqui: é a mesma função que alimenta o painel.
 function graficoLucro(){
   var hoje=new Date();
-  var regs=allRecords(),barras=[],max=0;
+  // BLOCO 5 (22/09/2026): a barra destacada passa a ser o MÊS ESCOLHIDO em
+  // "Lucro mensal", na Carteira — não mais o mês corrente, fixo. Quando nada
+  // foi escolhido, `_homeMesEscolhido()` devolve o mês corrente, e o
+  // comportamento de antes continua valendo sem exceção nenhuma.
+  var alvo=_homeMesEscolhido();
+  var regs=allRecords(),barras=[],max=0,achouAlvo=false;
   for(var i=5;i>=0;i--){
     var d=new Date(hoje.getFullYear(),hoje.getMonth()-i,1);
     var ini=dStr(d);
     var fim=dStr(new Date(d.getFullYear(),d.getMonth()+1,1));
     var v=_r2(regs.reduce(function(s,l){return s+jurosRecPeriodo(l,ini,fim);},0));
     if(v>max)max=v;
-    barras.push({rot:_MESES[d.getMonth()],v:v,atual:(i===0)});
+    var ehAlvo=(alvo&&d.getFullYear()===alvo.a&&d.getMonth()===alvo.m);
+    if(ehAlvo)achouAlvo=true;
+    barras.push({rot:_MESES[d.getMonth()],v:v,atual:(i===0),alvo:!!ehAlvo});
   }
   var corpo=barras.map(function(b){
     var h=max>0?Math.max(2,Math.round(b.v/max*100)):2;
     return '<div class="graf-c">'
       +'<div class="graf-v">'+(b.v>0?_curto(b.v):'—')+'</div>'
-      +'<div class="graf-b'+(b.atual?' hoje':'')+'" style="height:'+h+'%"></div>'
-      +'<div class="graf-m"'+(b.atual?' style="color:var(--ac);font-weight:700"':'')+'>'+b.rot+'</div>'
+      +'<div class="graf-b'+(b.alvo?' hoje':'')+'" style="height:'+h+'%"></div>'
+      +'<div class="graf-m"'+(b.alvo?' style="color:var(--ac);font-weight:700"':'')+'>'+b.rot+'</div>'
       +'</div>';
   }).join('');
+  // O mês escolhido pode ser mais antigo que os seis do gráfico. Nesse caso
+  // NENHUMA barra fica acesa, e ficar sem explicação parece defeito.
+  var aviso=(!achouAlvo&&alvo)
+    ?'<div style="font-size:11.5px;color:var(--dim2);margin-top:9px;line-height:1.5">'
+     +'O mês escolhido em Lucro mensal ('+esc(alvo.rotulo)+') é mais antigo que os seis '
+     +'meses deste gráfico.</div>'
+    :'';
   var atual=barras[5].v,anterior=barras[4].v;
   var dif='';
   if(anterior>0){
@@ -5245,15 +5788,80 @@ function graficoLucro(){
   return '<div class="bloco" style="margin-top:12px"><div style="padding:13px 15px 15px">'
     +'<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">'
     +'<span class="tile-l">Lucro por mês · juro recebido</span>'+dif+'</div>'
-    +'<div class="graf">'+corpo+'</div></div></div>';
+    +'<div class="graf">'+corpo+'</div>'+aviso+'</div></div>';
 }
 // Contador por situação. O style de linha nas etiquetas é LEGADO PRESERVADO:
 // a bateria financeira confere esse trecho de HTML letra por letra. O CSS
 // (.cnt div[style^="font-size:9px"]) devolve a cor do tema por cima dele.
-function cnt(n,rot,cor,corLegado){
-  return '<div class="cnt">'
+// Desde 22/09/2026 o contador é BOTÃO: tocar abre a lista de quem está ali
+// (bloco 5 do escopo). O `style` de linha da etiqueta continua sendo o legado
+// preservado — o CSS `.cnt div[style^="font-size:9px"]` depende desse prefixo
+// para devolver a cor do tema por cima dele.
+function cnt(n,rot,cor,corLegado,chave){
+  var on=(_rContador===chave);
+  return '<button class="cnt" aria-pressed="'+(on?'true':'false')+'"'
+    +(on?' style="border-color:'+cor+'"':'')
+    +' onclick="toggleRContador(\''+chave+'\')">'
     +'<div class="mono" style="font-size:17px;color:'+cor+'">'+n+'</div>'
-    +'<div style="font-size:9px;color:'+corLegado+'">'+rot+'</div></div>';
+    +'<div style="font-size:9px;color:'+corLegado+'">'+rot+'</div></button>';
+}
+// Qual contador está aberto (null = nenhum). Um de cada vez.
+function toggleRContador(qual){
+  _rContador=(_rContador===qual)?null:qual;
+  renderReportBody();
+}
+// Data em que o empréstimo foi quitado — o último pagamento do histórico.
+// Sem histórico de pagamento, cai no vencimento, que é o que o app sabe.
+function _rDataQuitacao(l){
+  var d='';
+  (l.history||[]).forEach(function(h){
+    if(h&&/^pagamento/.test(h.type||'')&&h.date&&h.date>d)d=h.date;
+  });
+  return d||l.dueDate||'';
+}
+// A lista que um contador abre: nome, valor e data. A data é a do VENCIMENTO
+// para quem está em aberto e a da QUITAÇÃO para quem já fechou — é o que o
+// dono precisa saber em cada caso.
+function _rListaContador(qual,filtered,fInad){
+  var itens=[];
+  if(qual==='paid'){
+    filtered.filter(function(l){return l.paid;}).forEach(function(l){
+      itens.push({nome:l.name,key:clientKey(l.name),id:l.id,inad:false,sit:'quitado',
+        valor:loanPrincipal(l),rot:'quitado em '+_dm(_rDataQuitacao(l)),ord:_rDataQuitacao(l),desc:true});
+    });
+  }else if(qual==='active'||qual==='overdue'){
+    filtered.filter(function(l){
+      if(l.paid)return false;
+      return qual==='active'?true:daysUntil(l.dueDate)<0;
+    }).forEach(function(l){
+      itens.push({nome:l.name,key:clientKey(l.name),id:l.id,inad:false,sit:sitLoan(l),
+        valor:getBalance(l),rot:_fraseVence(l,true),ord:l.dueDate||'',desc:false});
+    });
+  }else if(qual==='inad'){
+    fInad.forEach(function(i){
+      itens.push({nome:i.name,key:clientKey(i.name),id:i.id,inad:true,sit:'vencido',
+        valor:capitalNaRua(i),rot:'desde '+_dm(i.movidoEm),ord:i.movidoEm||'',desc:true});
+    });
+  }
+  itens.sort(function(a,b){
+    if(a.ord!==b.ord)return a.desc?(a.ord<b.ord?1:-1):(a.ord>b.ord?1:-1);
+    return String(a.nome).localeCompare(String(b.nome));
+  });
+  if(!itens.length){
+    return '<div class="bloco" style="margin-top:8px"><div style="padding:14px;font-size:12.5px;'
+      +'color:var(--dim);line-height:1.5">Nenhum aqui, com o período e os filtros de agora.</div></div>';
+  }
+  return '<div class="bloco" style="margin-top:8px">'
+    + itens.map(function(it){
+        var acao=it.inad?("openHistory('"+_js(it.id)+"')")
+                        :("abrirCliente('"+_js(it.key)+"','report')");
+        return _linhaAbre(it.sit,acao)
+          +'<span class="linha-n">'+esc(it.nome)+'</span>'
+          +'<span class="linha-s">'+esc(it.rot)+'</span>'
+          + _linhaFecha('<span style="text-align:right">'+din(it.valor,15)+'</span>'
+            +'<span class="linha-st"></span>');
+      }).join('')
+    +'</div>';
 }
 function renderReport(){
   var per=[['all','Tudo'],['1m','Este mês'],['3m','3 meses'],['6m','6 meses'],['1y','Este ano']];
@@ -5286,6 +5894,14 @@ function renderReport(){
     +'<div id="report-body"></div>';
   document.getElementById('report-content').innerHTML=html;
   renderReportBody();
+}
+// Como o período escolhido se chama por extenso, para o cabeçalho do bloco
+// de dinheiro movimentado — sem isso os três números não dizem de quando são.
+function _rRotuloPeriodo(){
+  if(_rPeriod==='custom')
+    return (_rFrom?_dm(_rFrom):'o começo')+' a '+(_rTo?_dm(_rTo):'hoje');
+  return {all:'desde o começo','1m':'este mês','3m':'3 meses',
+          '6m':'6 meses','1y':'este ano'}[_rPeriod]||'';
 }
 function renderReportBody(){
   var body=document.getElementById('report-body');if(!body)return;
@@ -5331,19 +5947,54 @@ function renderReportBody(){
   // de outro — aqui ele sai dos dois indicadores e aparece por escrito.
   var totalAberto=filtered.filter(function(l){return!l.paid;}).reduce(function(s,l){return s+getBalance(l);},0);
   var abertoInad=_r2(fInad.reduce(function(s,i){return s+getBalance(i);},0));
-  var capitalInad=_r2(fInad.reduce(function(s,i){return s+ledger(i).capitalEmprestado;},0));
-  var totalJuros=filtered.reduce(function(s,l){return s+loanJuros(l);},0)
-    +fInad.reduce(function(s,i){return s+loanJuros(i);},0);
+  // DECISAO DO DONO, 22/09/2026: "do seu bolso" conta o capital que AINDA NAO
+  // VOLTOU, nao o que saiu na vida toda. E a mesma conta da aba Inadimplentes e
+  // do "Dinheiro emprestado" da Carteira — os tres dizem o mesmo numero.
+  var capitalInad=_r2(fInad.reduce(function(s,i){return s+capitalNaRua(i);},0));
+  // ---- OS TRÊS NÚMEROS DO DINHEIRO MOVIMENTADO (bloco 5, 22/09/2026) ----
+  // Todos respeitam o período escolhido, pela MESMA janela [rr.from, capFim), e
+  // NUNCA se somam entre si.
+  // "Só de juros" ANTES SOMAVA A VIDA TODA de cada empréstimo (`loanJuros`): o
+  // período só escolhia QUEM entrava na conta, e de cada um vinha o juro de
+  // todos os tempos. É o mesmo defeito que a C9 corrigiu no capital e que aqui
+  // tinha ficado para trás — filtrar "este mês" e ver o juro de um ano.
+  // `jurosRecPeriodo` já existia no arquivo e nunca tinha sido usada.
+  // "Voltou" é número novo na tela; `recebidoNoPeriodo` foi escrita em
+  // 21/09/2026 exatamente para ele, e também nunca tinha sido usada.
+  var movSaiu=totalCapital;
+  var movVoltou=_r2(filtered.reduce(function(s,l){return s+recebidoNoPeriodo(l,rr.from,capFim);},0)
+    +fInad.reduce(function(s,i){return s+recebidoNoPeriodo(i,rr.from,capFim);},0));
+  var movJuros=_r2(filtered.reduce(function(s,l){return s+jurosRecPeriodo(l,rr.from,capFim);},0)
+    +fInad.reduce(function(s,i){return s+jurosRecPeriodo(i,rr.from,capFim);},0));
   var vencidos=filtered.filter(function(l){return!l.paid&&daysUntil(l.dueDate)<0;}).length;
   var quitados=filtered.filter(function(l){return l.paid;}).length;
   var ativos=filtered.filter(function(l){return!l.paid;}).length;
   var cn={};filtered.forEach(function(l){cn[clientKey(l.name)]=1;});
   var nClients=Object.keys(cn).length;
 
-  var html='<div class="tiles">'
-    + tile('Capital emprestado',dinK(totalCapital),'var(--tx)')
+  var html='<div class="sec"><span class="sec-t">Dinheiro movimentado</span>'
+    +'<span class="sec-t">'+esc(_rRotuloPeriodo())+'</span></div>'
+    +'<div class="bloco">'
+    + kv('Saiu do bolso',din(movSaiu,13.5))
+    + kv('Voltou',din(movVoltou,13.5,'var(--gr)'))
+    + kv('Só de juros',din(movJuros,15.5,'var(--ac)'),true)
+    +'</div>'
+    +'<div style="font-size:11.5px;color:var(--dim2);padding:8px 16px 0;line-height:1.5">'
+    +'Os três nunca se somam entre si. "Voltou" já traz o juro dentro dele — somar com '
+    +'"Só de juros" conta o mesmo dinheiro duas vezes, e somar com "Saiu do bolso" soma o '
+    +'seu dinheiro indo e voltando.'
+    +'</div>'
+    // Dois números de nome parecido em telas vizinhas confundem mais do que
+    // qualquer erro de conta, e este app já teve esse problema uma vez. Aqui a
+    // diferença fica escrita, em vez de o dono ter de adivinhar por que os dois
+    // não batem: são perguntas diferentes, as duas certas.
+    +'<div style="font-size:11.5px;color:var(--dim2);padding:6px 16px 0;line-height:1.5">'
+    +'Não confunda com o <b>Dinheiro emprestado</b> da Carteira: lá é quanto do seu dinheiro '
+    +'está na rua <b>hoje</b>, inadimplente incluído. Aqui é quanto saiu do bolso <b>no '
+    +'período</b>, sem os inadimplentes. Os dois estão certos e respondem perguntas diferentes.'
+    +'</div>'
+    +'<div class="tiles">'
     + tile('Em aberto',dinK(totalAberto),totalAberto>0?'var(--am)':'var(--dim2)')
-    + tile('Juro recebido',dinK(totalJuros),'var(--gr)')
     + tile('Descontos','<span class="mono">'+(totalDesc>0?'−':'')+'R$ '
         +Math.round(totalDesc).toLocaleString('pt-BR')+'</span>',
         totalDesc>0?'var(--dim)':'var(--dim2)')
@@ -5352,31 +6003,31 @@ function renderReportBody(){
     // o saldo parado e quanto disso saiu do bolso do dono. Fora dos dois
     // indicadores de cima, mas a vista. Cor de situacao (ambar), nunca dourado.
     +(fInad.length
-      ?'<div style="font-size:11.5px;color:var(--dim2);padding:0 16px 6px;line-height:1.5">'
+      ?'<div style="font-size:11.5px;color:var(--dim2);padding:8px 16px 0;line-height:1.5">'
        +'<b style="color:var(--am)">Provavelmente perdido</b> — '+fInad.length
        +(fInad.length===1?' cliente':' clientes')
        +' · saldo '+fmt(abertoInad)
-       +' · do seu bolso: '+fmt(capitalInad)
-       +' (fora de "Em aberto" e de "Capital emprestado").</div>'
+       +' · do seu bolso, ainda parado: '+fmt(capitalInad)
+       +' (fora de "Em aberto").</div>'
       :'')
-    +'<div style="font-size:11.5px;color:var(--dim2);padding:0 16px;line-height:1.5">'
-    // C9 — deixa claro que o capital mostrado e o do periodo escolhido, nao o da
-    // vida toda: e essa a mudanca que o dono vai notar primeiro.
-    +'Capital emprestado é o dinheiro que saiu do bolso dentro do período filtrado. '
+    +'<div style="font-size:11.5px;color:var(--dim2);padding:8px 16px 0;line-height:1.5">'
     +'Descontos concedidos no período: '+fmt(totalDesc)+' — abatidos do saldo por acordo, '
     +'não são dinheiro recebido nem entram no lucro.'
     +'</div>';
 
   html+=graficoLucro();
 
+  // Os contadores são BOTÕES desde 22/09/2026: tocar abre a lista de quem está
+  // ali, com nome, valor e data. Um de cada vez.
   html+='<div class="cnts">'
-    // o 4º argumento é o hex LEGADO da etiqueta (a bateria financeira o confere);
-    // quem manda na cor visível é o CSS .cnt div[style^="font-size:9px"]
-    + cnt(quitados,'Quitados','var(--gr)','#15803d')
-    + cnt(ativos,'Ativos','var(--ac)','#1d4ed8')
-    + cnt(vencidos,'Vencidos','var(--rd)','#991b1b')
-    + cnt(fInad.length,'Inadimplentes','var(--am)','#92400e')
+    // o 4º argumento é o hex LEGADO da etiqueta; quem manda na cor visível é o
+    // CSS .cnt div[style^="font-size:9px"], que depende desse prefixo
+    + cnt(quitados,'Quitados','var(--gr)','#15803d','paid')
+    + cnt(ativos,'Ativos','var(--ac)','#1d4ed8','active')
+    + cnt(vencidos,'Vencidos','var(--rd)','#991b1b','overdue')
+    + cnt(fInad.length,'Inadimplentes','var(--am)','#92400e','inad')
     +'</div>';
+  if(_rContador)html+=_rListaContador(_rContador,filtered,fInad);
 
   // Como os clientes do filtro se comportam. Conta CLIENTE, não empréstimo.
   var nSoJuro=0,nAmortiza=0;
@@ -5578,9 +6229,9 @@ function doPayAll(key){
       // em lancamento NOVO. O antigo 'pagamento_total' continua sendo RECONHECIDO
       // na leitura (razao e _histLabel), porque ja existem lancamentos gravados
       // com ele e o passado nunca pode parar de ser lido.
-      loan.history.push({date:today(),type:'pagamento_final',description:'Pagamento total (pagar tudo)',value:pay,note:note});
+      loan.history.push({date:today(),type:'pagamento_final',description:'Pagamento total (pagar tudo)',value:pay,vencimento:_vencAgora(loan),note:note});
     }else{
-      loan.payments.push({id:Date.now()+'_'+loan.id,date:today(),value:pay,note:note||'Pagar tudo parcial'});
+      loan.payments.push({id:Date.now()+'_'+loan.id,date:today(),value:pay,note:note||'Pagar tudo parcial',vencimento:_vencAgora(loan)});
     }
     if(pagos.indexOf(loan.id)<0)pagos.push(loan.id);
   });
@@ -5616,8 +6267,8 @@ function openBackup(){
     +'<div style="font-size:10px;color:var(--dim);margin-bottom:6px">Cole o backup. <strong style="color:var(--rd)">Substitui todos os dados atuais.</strong></div>'
     +'<textarea id="restore-input" placeholder="Cole o backup aqui..." style="width:100%;background:var(--pn2);border:0.5px solid var(--ln2);border-radius:8px;padding:9px 11px;font-size:10px;font-family:monospace;outline:none;resize:vertical;min-height:65px"></textarea>'
     +'<div style="display:flex;gap:7px;margin-top:7px">'
-    +'<label style="flex:1;background:var(--ln);color:var(--tx);border:0.5px solid var(--ln);border-radius:8px;padding:9px;font-size:11px;font-weight:600;text-align:center;cursor:pointer">Abrir arquivo<input type="file" accept=".json" style="display:none" onchange="loadFile(event)"></label>'
-    +'<button onclick="restoreBackup()" style="flex:1;background:var(--rdS);color:var(--rd);border:0.5px solid var(--rd);border-radius:8px;padding:9px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">Restaurar</button>'
+    +'<label style="flex:1;background:var(--ln);color:var(--tx);border:0.5px solid var(--ln);border-radius:8px;min-height:44px;display:flex;align-items:center;justify-content:center;padding:0 10px;font-size:13px;font-weight:600;text-align:center;cursor:pointer">Abrir arquivo<input type="file" accept=".json" style="display:none" onchange="loadFile(event)"></label>'
+    +'<button onclick="restoreBackup()" style="flex:1;background:var(--rdS);color:var(--rd);border:0.5px solid var(--rd);border-radius:8px;min-height:44px;padding:0 10px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Restaurar</button>'
     +'</div></div>');
 }
 // Junta todas as fotos referenciadas (IndexedDB ou base64 legado) num mapa {chave:base64}
@@ -6368,6 +7019,17 @@ function conferirContas(){
     });
   });
 
+  // M4 (21/09/2026) — empréstimos repetidos. Um clone que volta da nuvem
+  // engorda o "A receber" com dinheiro que nunca saiu do bolso, e sem isto
+  // aqui so da para perceber pelo total, que e tarde demais.
+  _gruposDeClones().forEach(function(g){
+    var p=g[0];
+    add('Empréstimos repetidos',
+      nome(p)+': '+g.length+' registros iguais — '+fmt(p.principal)+' a '+p.interest
+      +'%, começando em '+fmtDate(p.startDate)+'. Se não foram '+g.length
+      +' empréstimos de verdade, apague os que sobram pelo próprio app, para que a nuvem também esqueça.');
+  });
+
   var chaves={};
   (clients||[]).forEach(function(c){chaves[clientKey(c.name)]=1;});
   (loans||[]).forEach(function(l){
@@ -6412,6 +7074,59 @@ function conferirContas(){
     clientes:(clients||[]).length,
     inadimplentes:(inadimplentes||[]).length
   };
+}
+// ============================================================
+// M4 — EMPRÉSTIMO REPETIDO (CLONE) — 21/09/2026
+// ============================================================
+// Em 21/09/2026 apareceu no aparelho do dono um empréstimo do Diogo de
+// R$ 1.000,00 a 25% com início em 01/09 — igualzinho, campo por campo, a um
+// que ja existia. So o id era diferente. Ele nao tinha emprestado nada: era
+// um registro repetido que voltou da nuvem.
+//
+// Como um clone nasce: a "certidao de obito" de um registro apagado
+// (emp_tombstones_v1) mora SO no aparelho. Se ela se perde — troca de
+// aparelho, reinstalacao, limpeza dos dados do site — a linha continua viva
+// na nuvem, e na proxima busca o app ve um id que nao tem aqui e conclui que
+// e novidade. Tambem nasce de um toque duplo no botao de salvar.
+//
+// Nao da para o app decidir sozinho qual dos dois e o bom: os dois sao
+// identicos. Entao ele nao apaga nada — ele AVISA, e quem decide e o dono.
+// Sao duas portas:
+//   1) na hora de lancar, pergunta antes de criar mais um igual;
+//   2) em "Conferir contas", aponta os que ja estao na base.
+//
+// O criterio de "o mesmo empréstimo" é de proposito ESTREITO: mesmo cliente,
+// mesmo valor emprestado, mesma taxa e mesma data de inicio. Dois empréstimos
+// de verdade para a mesma pessoa, no mesmo dia e do mesmo valor existem — por
+// isso o app pergunta em vez de bloquear.
+function _mesmoEmprestimo(a,b){
+  if(!a||!b)return false;
+  return clientKey(a.name)===clientKey(b.name)
+    && _r2(a.principal)===_r2(b.principal)
+    && String(a.interest)===String(b.interest)
+    && String(a.startDate||'')===String(b.startDate||'');
+}
+// Todos os registros da base que sao iguais a `ref`, sem contar o proprio.
+function _clonesDe(ref,ignorarId){
+  return (loans||[]).concat(inadimplentes||[]).filter(function(o){
+    if(!o)return false;
+    if(ignorarId&&o.id===ignorarId)return false;
+    return _mesmoEmprestimo(ref,o);
+  });
+}
+// Junta a base em grupos de iguais. Devolve so os grupos com 2 ou mais.
+function _gruposDeClones(){
+  var todos=(loans||[]).concat(inadimplentes||[]), grupos=[], jaVi={};
+  todos.forEach(function(o){
+    if(!o||!o.id||jaVi[o.id])return;
+    var g=[o];
+    todos.forEach(function(p){
+      if(!p||!p.id||p.id===o.id||jaVi[p.id])return;
+      if(_mesmoEmprestimo(o,p))g.push(p);
+    });
+    if(g.length>1){g.forEach(function(x){jaVi[x.id]=1;});grupos.push(g);}
+  });
+  return grupos;
 }
 // ============================================================
 // M3 — ENCERRAR PENDÊNCIAS ANTIGAS (20/09/2026)
