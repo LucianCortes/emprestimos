@@ -566,6 +566,16 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 // Empréstimos que já estão lançados continuam com as datas que já
 // receberam — o valor novo vale para o que for lançado ou renovado
 // depois da mudança.
+// A VERSÃO QUE ESTÁ RODANDO NESTE APARELHO (05/10/2026).
+// Aparece no rodapé da tela de Conta. Existe por um motivo prático: depois de
+// publicar, a única forma de saber se o celular e o computador pegaram a
+// versão nova era procurar alguma mudança visível na tela — e nem toda
+// correção muda alguma coisa na tela. Sem esta linha, "já atualizei?" não
+// tinha resposta.
+// REGRA AO PUBLICAR: trocar esta data E a do `var VERSAO` dentro do sw.js.
+// As duas, sempre juntas, com o mesmo valor.
+var VERSAO_APP = '2026-10-05.2';
+
 var CONFIG = {
 
   // De quantos em quantos dias o empréstimo vence e o juro corre.
@@ -4108,7 +4118,11 @@ function renderConta(){
   html+='<div style="padding:14px 16px 8px;font-size:11.5px;color:var(--dim2);line-height:1.55">'
     +(logado?'Seus dados e as fotos sincronizam sozinhos entre seus aparelhos. O backup continua valendo como segurança extra.'
             :'O acesso é protegido por login. Sem conexão, o app usa os dados guardados no aparelho.')
-    +'</div>';
+    +'</div>'
+    // A versão que ESTE aparelho está rodando. É por aqui que se confere, depois
+    // de publicar, se o celular e o computador já pegaram a versão nova.
+    +'<div id="conta-versao" class="mono" style="padding:0 16px 18px;font-size:11.5px;'
+    +'color:var(--dim2)">Versão '+esc(VERSAO_APP)+'</div>';
   box.innerHTML=html;
   pintarMenuNuvem();
 }
