@@ -1755,6 +1755,15 @@ function accrueParcelas(){
     if(!l.parcelas||!l.parcelas.length)return;
     l.parcelas.forEach(function(p){
       if(p.paid)return;
+      // JURO ZERO: a parcela vencida FICA vencida (05/10/2026).
+      // Sem esta guarda, um parcelado a 0% entrava no laço abaixo, somava
+      // R$ 0,00 e mesmo assim EMPURRAVA o vencimento 30 dias. Em dois meses
+      // de atraso tres parcelas diferentes caiam na mesma data, o
+      // syncParceledLoan passava a apontar para um vencimento futuro e o
+      // atraso DESAPARECIA da tela — com o extrato poluido de "+R$ 0,00".
+      // Acordo sem juro de atraso existe (a Juliana, 10x R$ 250), entao a
+      // regra e: so rola o vencimento quem de fato cobra alguma coisa.
+      if(!(parseFloat(l.interest)>0))return;
       var guard=0;
       while(daysUntil(p.dueDate)<0&&guard<600){
         var before=parseFloat(p.currentAmount)||0;
@@ -2285,6 +2294,12 @@ function clientRate(nome){
     if(!l||clientKey(l.name)!==k)return;
     var t=parseFloat(l.interest);
     if(isNaN(t))return;                       // registro sem taxa não opina
+    // TAXA ZERO TAMBÉM NÃO OPINA (05/10/2026). Um acordo fechado sem juro de
+    // atraso (a Juliana, 10x R$ 250) grava interest=0 — é a ausência de taxa,
+    // não uma política de cobrar 0%. Sem esta linha o formulário do próximo
+    // empréstimo dela viria com 0% pré-marcado e a faixa diria "você cobrava
+    // 0% deste cliente". Sem nenhum registro com taxa, cai no padrão de 30%.
+    if(t<=0)return;
     vistas[t]=1;
     // A ESCOLHA é pelo startDate (o registro mexido mais recentemente); a DATA
     // MOSTRADA é a do desembolso, que não se move quando o empréstimo rola.
