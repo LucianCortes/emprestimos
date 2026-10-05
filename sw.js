@@ -18,7 +18,7 @@
 'use strict';
 
 // Troque a data ao publicar uma versao nova: e isso que apaga o cache velho.
-var VERSAO = '2026-10-05.2';
+var VERSAO = '2026-10-05.3';
 var CACHE = 'emprestimos-' + VERSAO;
 
 // O minimo para o app abrir sozinho: a propria pagina, o manifesto e a

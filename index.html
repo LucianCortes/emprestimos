@@ -574,7 +574,7 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 // tinha resposta.
 // REGRA AO PUBLICAR: trocar esta data E a do `var VERSAO` dentro do sw.js.
 // As duas, sempre juntas, com o mesmo valor.
-var VERSAO_APP = '2026-10-05.2';
+var VERSAO_APP = '2026-10-05.3';
 
 var CONFIG = {
 
@@ -895,7 +895,22 @@ function pendingCount(){
   SYNC_TABLES.forEach(function(t){n+=o[t].length;});
   // D5 — as fotos que ainda nao subiram entram na MESMA conta, para aparecerem
   // no mesmo aviso da tela. Foto que so existe no aparelho tambem e dado em risco.
-  return n+tombstones().length+(typeof pendingDocsCount==='function'?pendingDocsCount():0);
+  //
+  // SO O QUE AINDA NAO FOI PARA A NUVEM (05/10/2026).
+  // Antes somava tombstones().length, a lista INTEIRA. Como a M5 fez a anotacao
+  // de exclusao sobreviver 90 dias (para o registro apagado nao ressuscitar pelo
+  // outro aparelho), toda exclusao ficava contando como "pendente" por tres
+  // meses, mesmo depois de a nuvem ja ter apagado a linha.
+  // O ESTRAGO: uma restauracao apaga dezenas de registros de uma vez. Depois da
+  // base limpa de 28/09 (63 registros), a conta travou em 64 e a tela de
+  // restaurar passou a dizer "Tem 64 lancamentos que ainda nao subiram" para
+  // sempre — e "Sincronizar agora" nunca zerava, porque nao havia nada para
+  // sincronizar. O dono ficaria impedido de restaurar qualquer arquivo ate os
+  // tombstones expirarem, em 28/12.
+  // A marca `aplicado` ja existia e diz exatamente isto: a viagem ate a nuvem
+  // ja foi feita. Pendente e so o que ainda nao foi.
+  var tombPend=tombstones().filter(function(t){return !t.aplicado;}).length;
+  return n+tombPend+(typeof pendingDocsCount==='function'?pendingDocsCount():0);
 }
 
 // ============================================================
